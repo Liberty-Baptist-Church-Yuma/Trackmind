@@ -30,6 +30,19 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# GPU pose engine: ONNX Runtime + DirectML (DirectML.dll, provider DLLs) and
+# the RTMO model. Optional at runtime — without them Trackmind uses MediaPipe.
+try:
+    tmp_ret = collect_all('onnxruntime')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+    hiddenimports += ['pose_gpu']
+except Exception as e:
+    print(f"WARNING: onnxruntime not bundled ({e}); the exe will be CPU-only")
+if os.path.isfile('models/rtmo-s-u8.onnx'):
+    datas += [('models/rtmo-s-u8.onnx', 'models'), ('models/LICENSE-RTMO.txt', 'models')]
+else:
+    print("WARNING: models/rtmo-s-u8.onnx missing; the exe will be CPU-only")
+
 # pywebview + its WebView2 interop DLLs (Microsoft.Web.WebView2.*.dll, pythonnet)
 tmp_ret = collect_all('webview')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

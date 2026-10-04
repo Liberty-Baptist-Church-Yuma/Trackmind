@@ -4,3 +4,5 @@ build/
 dist/
 .pytest_cache/
 *.exe
+models/*.zip
+models/rtmo-s.onnx

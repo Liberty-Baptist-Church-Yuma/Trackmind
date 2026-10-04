@@ -1,0 +1,23 @@
+rtmo-s-u8.onnx
+==============
+
+RTMO-s (body7, 640x640) from OpenMMLab MMPose:
+  https://github.com/open-mmlab/mmpose/tree/main/projects/rtmo
+  Downloaded from https://download.openmmlab.com/mmpose/v1/projects/rtmo/onnx_sdk/
+  rtmo-s_8xb32-600e_body7-640x640-dac2bf74_20231211.zip (end2end.onnx)
+
+Modified by Trackmind: the input was changed to uint8 NHWC, with a Cast and a
+Transpose added in front of the original graph (pose_gpu.make_uint8_input).
+The network itself is unchanged.
+
+Copyright 2018-2023 OpenMMLab. Licensed under the Apache License, Version 2.0
+(the "License"); you may not use this file except in compliance with the
+License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.

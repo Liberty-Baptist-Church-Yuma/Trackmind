@@ -49,7 +49,7 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
   "camera_ip": "192.168.100.88",
   "home_preset": 0,
   "anchor": { "enabled": true, "learned": true, "preset": 5, "mode": "recall",
-              "range": 4, "hold": 0.25, "state": "held", "offset": null,
+              "range": 4, "hold": 0.25, "hold_top": 0.5, "state": "held", "offset": null,
               "learning": false, "error": null },
   "auto": { "enabled": true, "style": "balanced", "situation": "walking",
             "learned": true, "gain_pan": 0.042, "gain_tilt": 0.031,
@@ -83,7 +83,7 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
 | `manual` | bool | A manual `move` or `zoom` is in progress (a Stream Deck key is being held). |
 | `camera_ip` | string | Camera IP from Trackmind's settings. |
 | `home_preset` | int | Preset used by `home` and by lost-subject recovery. |
-| `anchor` | object | Pulpit anchor for the active profile. `state` is `"off"` (disabled or not tracking), `"free"` (tracking normally), `"snapping"` (recalling the preset or gliding to the pulpit) or `"held"` (holding the pulpit shot). `offset` is how far the camera is from the learned pulpit, in Snap-range steps (`null` when unknown or while holding). `learned` is `false` until **Learn pulpit** has been run for this profile. `mode` is `"recall"` or `"glide"`. `range` (Snap range, compare with `offset`) and `hold` (hold-zone half-width, fraction of the frame) are the profile's settings. `learning`/`error` report the Learn pulpit run. |
+| `anchor` | object | Pulpit anchor for the active profile. `state` is `"off"` (disabled or not tracking), `"free"` (tracking normally), `"snapping"` (recalling the preset or gliding to the pulpit) or `"held"` (holding the pulpit shot). `offset` is how far the camera is from the learned pulpit, in Snap-range steps (`null` when unknown or while holding). `learned` is `false` until **Learn pulpit** has been run for this profile. `mode` is `"recall"` or `"glide"`. `range` (Snap range, compare with `offset`) `hold` (hold-zone half-width, fraction of the frame) and `hold_top` (hold-zone height from the top of the frame) are the profile's settings. `learning`/`error` report the Learn pulpit run. |
 | `auto` | object | Auto mode. `enabled` and `style` (`"calm"`, `"balanced"`, `"responsive"`) are always present. While tracking with Auto on it also reports `situation` (`"still"`, `"walking"`, `"fast"`), whether the camera model is `learned` yet, the learned `gain_pan`/`gain_tilt` (frame widths per second per VISCA speed step), `latency` (seconds from command to video), `fit_r2` (how well the model fits, 0–1) and `soften` (1 = normal, lower = the hunting guard has eased off). |
 | `profile` | string \| null | Last loaded profile. |
 | `profiles` | string[] | Names of all saved profiles. |

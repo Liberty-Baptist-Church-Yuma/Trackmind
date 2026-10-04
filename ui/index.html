@@ -298,6 +298,8 @@
 					<div class="slider-row"><input class="slider" type="range" min="0.3" max="4" step="0.1" data-setting="anchor_dwell" data-fixed="1" data-suffix=" s" /><output class="value num"></output></div></div>
 				<div class="row col"><span>Hold zone <small class="hint">how far the speaker can move before tracking resumes</small></span>
 					<div class="slider-row"><input class="slider" type="range" min="10" max="45" step="1" data-setting="anchor_hold" data-scale="100" data-suffix="%" /><output class="value num"></output></div></div>
+				<div class="row col"><span>Hold zone height <small class="hint">how far down from the top of the picture the hold zone reaches · the speaker's head must stay inside it</small></span>
+					<div class="slider-row"><input class="slider" type="range" min="20" max="100" step="5" data-setting="anchor_hold_top" data-scale="100" data-suffix="%" /><output class="value num"></output></div></div>
 			</div>
 			<p class="hint pad" id="anchorProfileHint">Each profile keeps its own pulpit. Changes here save straight into the active profile.</p>
 		</section>
@@ -310,6 +312,17 @@
 					<div class="slider-row"><input class="slider" type="range" min="0" max="2" step="0.05" data-setting="latency_comp" data-fixed="2" data-suffix=" s" /><output class="value num"></output></div></div>
 				<div class="row col"><span>Lost timeout <small class="hint">seconds before returning to the home preset</small></span>
 					<div class="slider-row"><input class="slider" type="range" min="1" max="10" step="0.5" data-setting="lost_timeout" data-fixed="1" data-suffix=" s" /><output class="value num"></output></div></div>
+			</div>
+			<h3 class="eyebrow sub">Processing</h3>
+			<div class="card" data-tone="blue">
+				<div class="row"><span>Pose detection <small class="hint">GPU frees the CPU for vMix and tracks faster · Auto uses the GPU when it can</small></span>
+					<div class="seg" data-setting="pose_engine" role="radiogroup">
+						<button data-value="auto">Auto</button>
+						<button data-value="gpu">GPU</button>
+						<button data-value="cpu">CPU</button>
+					</div>
+				</div>
+				<div class="row"><span>In use <small class="hint" id="engineStatus">—</small></span></div>
 			</div>
 			<h3 class="eyebrow sub">Appearance</h3>
 			<div class="card" data-tone="blue">

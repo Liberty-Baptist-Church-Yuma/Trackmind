@@ -167,6 +167,7 @@ Each profile keeps its own anchor: on or off, preset, learned position, and tuni
 | Snap range | 4 | How close the camera must settle to the pulpit, in steps of about 1° on PTZOptics cameras. While tracking, the Position line shows the live distance, so you can tune this in a rehearsal. |
 | Settle time | 1.0 s | How long the camera must sit still before snapping, so walking past the pulpit doesn't trigger it |
 | Hold zone | 25% | How far off center (fraction of the frame width) the speaker can move before tracking resumes |
+| Hold zone height | 50% | How far down from the top of the picture the hold zone reaches. The speaker's head has to stay inside it |
 
 It needs a camera that answers the VISCA pan/tilt position inquiry. PTZOptics cameras do. If **Learn pulpit** reports that the camera didn't give its position, your camera can't use this feature.
 
@@ -276,6 +277,8 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 
 **Pulpit anchor:** while the anchor is on, Trackmind asks the camera for its absolute pan/tilt about 4 times a second (VISCA `Pan-tiltPosInq`). When the camera has stopped within the snap range of the learned pulpit position for the settle time, it recalls the pulpit preset or glides there (VISCA absolute move). It then ignores small movements until the speaker leaves the hold zone.
 
+**GPU processing:** pose detection runs on the graphics card when there's a usable one. It uses [RTMO](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmo) through ONNX Runtime with DirectML, so any DirectX 12 GPU works (NVIDIA, AMD or Intel) with no CUDA install. The GPU with the most video memory is picked automatically. RTMO finds *everyone* in the frame, so the subject lock simply picks the right person instead of having to crop the picture. The camera stream is also decoded on the GPU when the driver allows. If there's no usable GPU, or it fails mid-service, Trackmind carries on with MediaPipe on the CPU. **Settings → Advanced → Processing** shows which engine is in use and how long each frame takes. On an RTX 2060 shared with vMix it ran at roughly twice the frame rate with half the CPU time per frame.
+
 **Auto mode:** instead of fixed speeds, Auto works in picture terms and learns the rest while it runs. Each frame it measures how the background moved (phase correlation), which is the camera's own motion. Comparing that with the speeds it sent, it learns how far one speed step moves the picture at the current zoom, and the delay between a command and the video. From that it knows how the speaker is really moving, regardless of what the camera is doing. It steers toward where the speaker will be once the moves already sent show up on video, which is what stops overshoot. It recognises three situations: *still* (calm, wide dead zone, centres gently), *walking* (matches the speaker's pace and closes the gap gently) and *fast* (catches up hard, only when needed). If the camera ever starts bouncing back and forth, it eases itself off. What it learns about the camera is remembered between sessions. See `autopilot.py`.
 
 **Lock-on:** MediaPipe Pose only reports one person — whoever it judges most prominent. So while LOCK is active, pose runs on a crop of the frame around the locked subject, and anyone else is mostly outside what the model sees. If the subject disappears, the search follows the direction they were moving and widens the longer they're gone, until it covers the whole frame. After the camera goes to its home preset, the lock picks up the most prominent person again.
@@ -324,7 +327,7 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 
 **The pulpit anchor never snaps, or snaps when it shouldn't**
 - Check **Settings → Pulpit**. While tracking, the Position line shows how far the camera is from the pulpit. If it rests just outside the range, raise **Snap range**. If it snaps while the speaker walks past, raise **Settle time** or lower **Snap range**.
-- If the speaker's gestures release the hold, raise **Hold zone**.
+- If the speaker's gestures release the hold, raise **Hold zone**. If leaning down to the pulpit or the notes releases it, raise **Hold zone height**.
 - If you moved or re-saved the pulpit preset on the camera, click **Re-learn**.
 
 **The setup wizard doesn't appear on first launch**
@@ -356,6 +359,7 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 | mediapipe | == 0.10.9 | Pinned: newer versions removed the solutions API |
 | numpy | >= 1.24.0 | Array operations |
 | pywebview | >= 5.3 | Native app window (Microsoft Edge WebView2 on Windows) |
+| onnxruntime-directml | >= 1.20 | GPU pose engine on any DirectX 12 GPU (NVIDIA, AMD, Intel). Optional: without it Trackmind uses MediaPipe on the CPU |
 | pyinstaller | >= 6.0.0 | EXE packaging (build only) |
 
 ---
@@ -369,7 +373,9 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 
 ## Built with
 
-- [MediaPipe](https://mediapipe.dev): pose detection
+- [RTMO](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmo) (OpenMMLab MMPose, Apache-2.0): GPU multi-person pose detection. The model ships as `models/rtmo-s-u8.onnx`; see `models/LICENSE-RTMO.txt`
+- [ONNX Runtime](https://onnxruntime.ai) with DirectML: GPU inference
+- [MediaPipe](https://mediapipe.dev): pose detection on the CPU (fallback)
 - [OpenCV](https://opencv.org): video capture
 - [pywebview](https://pywebview.flowrl.com): native app window
 - [Inter](https://rsms.me/inter/): typeface (SIL Open Font License)

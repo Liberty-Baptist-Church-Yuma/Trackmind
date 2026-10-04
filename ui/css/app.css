@@ -162,15 +162,17 @@ body[data-tracking="true"] .deadzone { opacity: 1; }
 	backdrop-filter: blur(10px);
 }
 
-/* Pulpit hold zone: full-height band the speaker can roam while the shot is held */
+/* Pulpit hold zone: box from the top of the picture the speaker can roam while the shot is held */
 .holdzone {
 	position: absolute;
 	top: 0;
-	bottom: 0;
-	border-inline: 1.5px dashed rgba(var(--amber-rgb), 0.55);
+	height: 50%;
+	border: 1.5px dashed rgba(var(--amber-rgb), 0.55);
+	border-top: 0;
+	border-radius: 0 0 10px 10px;
 	background: linear-gradient(90deg, rgba(var(--amber-rgb), 0.07), transparent 18%, transparent 82%, rgba(var(--amber-rgb), 0.07));
 	opacity: 0;
-	transition: opacity 0.4s var(--ease), left 0.3s var(--ease), width 0.3s var(--ease);
+	transition: opacity 0.4s var(--ease), left 0.3s var(--ease), width 0.3s var(--ease), height 0.3s var(--ease);
 	pointer-events: none;
 }
 .holdzone span {

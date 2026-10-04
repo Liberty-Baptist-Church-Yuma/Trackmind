@@ -2,6 +2,17 @@
 
 ## v1.8.3 — 2026-10-04
 
+### Pulpit anchor
+- **The hold zone is now a box in the upper part of the picture**, not a full-height band. While the pulpit shot is held, the speaker's head has to stay in it. **Hold zone height** (Settings → Pulpit, per profile) sets how far down it reaches; it defaults to the top 50%. Leaning and gesturing keep the shot; walking down off the platform or sitting down releases it. The amber outline on the video shows the box.
+
+### GPU processing
+- **Pose detection runs on the GPU.** It uses RTMO (OpenMMLab) on ONNX Runtime + DirectML, so any DirectX 12 GPU works (NVIDIA, AMD or Intel) with no CUDA to install. The GPU with the most video memory is chosen automatically. MediaPipe can't use the GPU on Windows, so it used to compete with vMix for the CPU.
+- **Faster, lighter.** On an RTX 2060 that vMix was also using, live tracking went from 6.4 to 13.7 frames per second, with half the CPU time per frame. When the GPU isn't busy, the model takes about 25 ms per frame (MediaPipe on the CPU took about 95 ms). Image conversion was moved into the model so it runs on the GPU too.
+- **The lock sees everyone.** The GPU model detects every person in the frame. Unlocked tracking stays on the person it's following instead of hopping to whoever looks most prominent, and the lock picks the person nearest where the subject is heading, of similar size.
+- **Hardware video decoding** of the camera stream when the driver supports it.
+- **Always a fallback.** With no usable GPU, or if the GPU fails mid-service, Trackmind switches to MediaPipe on the CPU and keeps tracking.
+- **Settings → Advanced → Processing:** Auto / GPU / CPU, plus the engine, device and time per frame in use.
+
 ### Stream Deck
 - **New Auto Mode key** (plugin v1.2.0). It toggles Auto mode on or off, can set a style (Calm, Balanced or Responsive) on every press, and shows what Auto is doing: Steady, Following, Catching up, or Learning. A green corner light shows while it's active, amber while it's learning or has eased off. Needs Trackmind v1.8.2 or newer.
 
