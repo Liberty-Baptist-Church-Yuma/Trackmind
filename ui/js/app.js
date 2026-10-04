@@ -113,6 +113,7 @@ const actions = {
 	tracking: () => run("tracking", { state: "toggle" }),
 	lock: () => run("lock", { state: "toggle" }),
 	autozoom: () => run("autozoom", { state: "toggle" }),
+	auto: () => run("auto", { state: "toggle" }),
 	home: async () => {
 		flash($("#tileHome"));
 		if (await run("home", { tracking: "off" })) toast(`Home preset ${S?.home_preset ?? ""} recalled`, "red");
@@ -166,7 +167,7 @@ document.addEventListener("keydown", (e) => {
 		return;
 	}
 	const k = e.key.toLowerCase();
-	const map = { t: "tracking", l: "lock", z: "autozoom", h: "home", u: "toggle-tune", f: "fullscreen", ",": "open-settings" };
+	const map = { t: "tracking", l: "lock", a: "auto", z: "autozoom", h: "home", u: "toggle-tune", f: "fullscreen", ",": "open-settings" };
 	if (e.key === "F11") {
 		e.preventDefault();
 		return toggleFullscreen();
@@ -292,10 +293,35 @@ function describe(s) {
 		if (s.locked) return { tone: "amber", label: "Locked", detail: "Following the locked subject" };
 		if (s.anchor?.state === "held") return { tone: "green", label: "Tracking", detail: "Holding on the pulpit" };
 		return s.subject
-			? { tone: "green", label: "Tracking", detail: "Subject in frame" }
+			? { tone: "green", label: "Tracking", detail: s.auto?.enabled ? `Auto · ${autoLabel(s.auto)}` : "Subject in frame" }
 			: { tone: "green", label: "Tracking", detail: "Searching for a subject…" };
 	}
 	return { tone: "off", label: "Paused", detail: s.profile ? `Profile · ${s.profile}` : "Tracking is off" };
+}
+
+// Auto mode — what it's doing, in words
+const AUTO_SITUATION = { still: "Steady", walking: "Following", fast: "Catching up" };
+function autoLabel(a) {
+	if (!a?.situation) return "Ready";
+	if (!a.learned) return "Learning the camera";
+	return AUTO_SITUATION[a.situation] + (a.soften < 0.9 ? " · eased off" : "");
+}
+
+function renderAuto(s) {
+	const a = s.auto;
+	if (!a) return;
+	let line = "Off — using the manual speeds below";
+	let color = "";
+	if (a.enabled && !s.tracking) line = "On — starts when tracking does";
+	else if (a.enabled && !a.learned)
+		(line = "Learning the camera — it measures how this camera moves the first few times it pans"), (color = "var(--amber)");
+	else if (a.enabled) {
+		const pct = Math.round(a.gain_pan * 100);
+		line = `${autoLabel(a)} · 1 speed step ≈ ${pct}% of the frame per second · video delay ${a.latency.toFixed(2)} s`;
+		color = "var(--green)";
+	}
+	text("#autoStatus", line);
+	$("#autoStatus").style.color = color;
 }
 
 function renderSignal(s) {
@@ -342,6 +368,8 @@ function render(s) {
 		warn: s.tracking && !s.subject,
 	});
 	tile("#tileLock", s.locked, s.locked ? "On subject" : s.tracking ? "Off" : "Track first", { disabled: !s.tracking });
+	tile("#tileAuto", !!s.auto?.enabled, s.auto?.enabled ? (s.tracking ? autoLabel(s.auto) : "On") : "Off");
+	b.dataset.auto = String(!!s.auto?.enabled);
 	tile("#tileZoom", s.autozoom, s.autozoom ? (s.zooming === 1 ? "Zooming in" : s.zooming === -1 ? "Zooming out" : "On") : "Off");
 	text("#tileHomeSub", `Preset ${s.home_preset}`);
 
@@ -601,6 +629,7 @@ function renderSettings(s) {
 		$("#apiStatus").style.color = api.enabled ? (api.listening ? "var(--green)" : "var(--red)") : "";
 	}
 	renderAnchor(s);
+	renderAuto(s);
 	text("#aboutVersion", `v${s.version}`);
 	const u = s.update;
 	if (u) {

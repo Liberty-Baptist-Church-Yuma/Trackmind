@@ -93,11 +93,12 @@ The live camera fills the window. Every control floats over the picture as liqui
 | **Top left** | Trackmind logo |
 | **Top center** | Tally pill: **TRACKING** (green), **LOCKED** (amber), **PAUSED**, **CONNECTING** (amber), **NO SIGNAL** (red). Next to it is what the tracker is doing right now. |
 | **Top right** | Camera chip (IP and live FPS; click it for camera settings), **Live tune**, **Full screen**, **Settings** |
-| **Bottom dock** | The buttons you use during a service: **Tracking**, **Lock**, **Auto-Zoom**, **Home** |
+| **Bottom dock** | The buttons you use during a service: **Tracking**, **Lock**, **Auto**, **Auto-Zoom**, **Home** |
 | **On the video** | A green reticle follows the subject (it turns amber when locked). The dashed box is the dead zone, where the camera stays still. While the [pulpit anchor](#pulpit-anchor) holds the shot, a **Holding on pulpit** chip shows at the top and an amber band marks the hold zone. |
 
 - **Tracking (T):** when on, the camera follows whoever is detected in frame. When off, the camera stops, and you have full manual control from a joystick, Stream Deck, vMix, or any other controller.
 - **Lock (L):** while tracking, locks onto the current subject and ignores everyone else. Turning tracking off releases the lock.
+- **Auto (A):** Auto mode. Trackmind chooses the speed, dead zones and smoothing itself, adapting to the zoom and to whether the speaker is standing still, walking or moving fast. The button shows what it's doing: *Steady*, *Following*, *Catching up*, or *Learning the camera* during its first moves.
 - **Auto-Zoom (Z):** zooms in and out to keep the subject filling the frame.
 - **Home (H):** recalls the home preset and pauses tracking so the shot holds.
 
@@ -115,6 +116,7 @@ Click the sliders icon or press **U** for a floating panel that adjusts tracking
 |---|---|
 | `T` | Tracking on / off |
 | `L` | Lock on / off |
+| `A` | Auto mode on / off |
 | `Z` | Auto-zoom on / off |
 | `H` | Recall home preset |
 | `U` | Live tune panel |
@@ -172,6 +174,9 @@ It needs a camera that answers the VISCA pan/tilt position inquiry. PTZOptics ca
 
 | Setting | Default | Description |
 |---|---|---|
+| Auto mode | Off | Trackmind picks speed, dead zones and smoothing to suit the situation, and learns how your camera moves. While it's on, the manual speed, dead-zone and smoothing settings below are greyed out. Saved per profile. |
+| Auto style | Balanced | **Calm** moves less and more gently, **Responsive** follows more tightly. |
+| Auto status | | What Auto is doing, and what it has learned: how far one speed step moves the picture, and the video delay. |
 | Vertical aim | 2 | −7 = top of head, 0 = centered, +7 = feet |
 | Motion smoothing | 5 | How gently the camera eases into and out of moves. 0 = instant, 10 = silkiest (slightly slower to react). |
 | Motion Sync | Off | PTZOptics Motion Sync: pan, tilt and zoom reach a recalled preset at the same moment. It's pushed to the camera on connect and saved per profile. |
@@ -264,13 +269,18 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 2. A dedicated buffer thread drains the stream continuously and keeps only the latest frame, so lag can't build up.
 3. Each frame goes through **MediaPipe Pose**, a local AI model. No internet is required.
 4. Velocity prediction estimates where the subject is heading, to compensate for RTSP latency.
-5. Pan and tilt speed is **proportional** to how far off center the subject is, then **slew-rate limited**. The camera eases into and out of every move instead of snapping between fixed speeds.
-6. **VISCA over IP** commands go to the camera's LAN port (TCP 5678).
-7. The interface is an HTML app shown in a native WebView2 window. A local-only server in the same process hosts it, streams the preview (MJPEG), and pushes live state (Server-Sent Events). That same server is the Control API.
+5. The aim point follows the torso (shoulders and hips, not the arms), through an adaptive jitter filter, so gestures don't steer the camera.
+6. Pan and tilt speed is **proportional** to how far off center the subject is, then **slew-rate limited**. The camera eases into every move, and brakes faster than it accelerates. A move that starts at the dead-zone edge carries on until the subject is near center, instead of parking them on the edge. A missed detection for a frame or two eases off rather than stopping the camera dead.
+7. **VISCA over IP** commands go to the camera's LAN port (TCP 5678).
+8. The interface is an HTML app shown in a native WebView2 window. A local-only server in the same process hosts it, streams the preview (MJPEG), and pushes live state (Server-Sent Events). That same server is the Control API.
 
 **Pulpit anchor:** while the anchor is on, Trackmind asks the camera for its absolute pan/tilt about 4 times a second (VISCA `Pan-tiltPosInq`). When the camera has stopped within the snap range of the learned pulpit position for the settle time, it recalls the pulpit preset or glides there (VISCA absolute move). It then ignores small movements until the speaker leaves the hold zone.
 
-**Lock-on:** while LOCK is active, the detector only follows detections within 25% of the frame from the locked subject's last position. Anyone else is ignored.
+**Auto mode:** instead of fixed speeds, Auto works in picture terms and learns the rest while it runs. Each frame it measures how the background moved (phase correlation), which is the camera's own motion. Comparing that with the speeds it sent, it learns how far one speed step moves the picture at the current zoom, and the delay between a command and the video. From that it knows how the speaker is really moving, regardless of what the camera is doing. It steers toward where the speaker will be once the moves already sent show up on video, which is what stops overshoot. It recognises three situations: *still* (calm, wide dead zone, centres gently), *walking* (matches the speaker's pace and closes the gap gently) and *fast* (catches up hard, only when needed). If the camera ever starts bouncing back and forth, it eases itself off. What it learns about the camera is remembered between sessions. See `autopilot.py`.
+
+**Lock-on:** MediaPipe Pose only reports one person — whoever it judges most prominent. So while LOCK is active, pose runs on a crop of the frame around the locked subject, and anyone else is mostly outside what the model sees. If the subject disappears, the search follows the direction they were moving and widens the longer they're gone, until it covers the whole frame. After the camera goes to its home preset, the lock picks up the most prominent person again.
+
+**Diagnostics:** while tracking, Trackmind records what it detected and every command it sent to `%USERPROFILE%\.trackmind\<your-username>\diagnostics\` (one file per day, about 10 samples a second; no camera credentials). Files older than 30 days are deleted automatically. See [Troubleshooting](#troubleshooting) for how to read them.
 
 ---
 
@@ -286,8 +296,11 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 - Check that TCP port 5678 isn't blocked by Windows Firewall.
 - Confirm VISCA over IP is enabled in the camera's web UI.
 
-**Tracking is jittery or oscillating**
-- **Settings → Tracking:** raise the dead zones (try 0.20–0.22), lower the slow speeds, or raise motion smoothing.
+**Tracking is jittery, too fast, or oscillating**
+- Try **Auto mode** (the **Auto** button, or `A`). It adapts speed and smoothing to the zoom and to what the speaker is doing, so there are no speeds to tune. Pick **Calm** in Settings → Tracking if it's still too lively for your room.
+- Run the diagnostics report: `python diagnostics.py` (or `python diagnostics.py --days 30`). It lists hunting (the camera reversing direction), stop-start stutter, time spent at high speed, detection dropouts, lock rejections, and low frame rate, with a suggested fix for each.
+- **Settings → Tracking:** keep the fast speeds at 4–6 for zoomed-in shots. The tighter the shot, the further each speed step moves the picture, and with ~0.3 s of video delay a fast camera overshoots and swings back.
+- Raise the dead zones (try 0.20–0.22), lower the slow speeds, or raise motion smoothing.
 - **Settings → Advanced:** lower latency compensation (try 0.2).
 
 **The window is blank, or Trackmind opens in the browser instead**
@@ -324,6 +337,9 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 | Path | What |
 |---|---|
 | `autotrack.py` | Tracking engine, camera control, local server and Control API, app window |
+| `autopilot.py` | Auto mode: ego-motion, the self-learning camera model, and the situational controller |
+| `diagnostics.py` | Tracking flight recorder (30-day retention) and the `python diagnostics.py` problem report |
+| `tests/` | `python -m pytest tests`. Includes a closed-loop camera simulation with video latency, and lock tests against a fake one-person pose model. Runs without a camera, and without MediaPipe installed. |
 | `ui/` | The interface: HTML/CSS/JS with no build step, plus the **Trackmind Liquid** design system (`ui/css/glass.css`, `ui/js/liquid-glass*.js`) |
 | `streamdeck/` | Stream Deck plugin (TypeScript). It reuses `ui/`'s design system and glass optics. |
 | `branding/` | Generates every logo, icon, and installer image from one script (`npm run build`) |

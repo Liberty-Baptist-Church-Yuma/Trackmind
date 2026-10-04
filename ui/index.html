@@ -117,6 +117,10 @@
 		<span class="tile-glyph"><svg><use href="#i-lock" /></svg></span>
 		<span class="tile-text"><b>Lock</b><small id="tileLockSub">Off</small></span>
 	</button>
+	<button class="tile" data-tone="green" data-action="auto" id="tileAuto" data-tip="Auto mode: adapts speed and smoothing to the situation" data-key="A">
+		<span class="tile-glyph"><svg><use href="#i-sparkle" /></svg></span>
+		<span class="tile-text"><b>Auto</b><small id="tileAutoSub">Off</small></span>
+	</button>
 	<button class="tile" data-tone="blue" data-action="autozoom" id="tileZoom" data-tip="Keep the subject filling the frame" data-key="Z">
 		<span class="tile-glyph"><svg><use href="#i-zoom" /></svg></span>
 		<span class="tile-text"><b>Auto-Zoom</b><small id="tileZoomSub">Off</small></span>
@@ -142,7 +146,7 @@
 		<span>Vertical aim <small class="hint">head ↔ feet</small></span>
 		<div class="slider-row"><input class="slider centred" type="range" min="-7" max="7" step="1" data-adjust="track_offset" /><output class="value num"></output></div>
 	</div>
-	<div class="tune-row" data-tone="green">
+	<div class="tune-row manual-only" data-tone="green">
 		<span>Smoothing <small class="hint">snappy ↔ silky</small></span>
 		<div class="slider-row"><input class="slider" type="range" min="0" max="10" step="1" data-adjust="motion_smooth" /><output class="value num"></output></div>
 	</div>
@@ -214,22 +218,35 @@
 		<section class="group" id="sec-tracking">
 			<h3 class="eyebrow">Tracking</h3>
 			<div class="card" data-tone="green">
+				<div class="row"><span>Auto mode <small class="hint">picks speed, dead zones and smoothing to suit what the speaker is doing</small></span>
+					<input type="checkbox" class="switch" data-setting="auto_mode" /></div>
+				<div class="row"><span>Auto style</span>
+					<div class="seg" data-setting="auto_style" role="radiogroup">
+						<button data-value="calm">Calm</button>
+						<button data-value="balanced">Balanced</button>
+						<button data-value="responsive">Responsive</button>
+					</div>
+				</div>
+				<div class="row"><span>Auto status <small class="hint" id="autoStatus">Off</small></span></div>
+			</div>
+			<div class="card" data-tone="green">
 				<div class="row col"><span>Vertical aim <small class="hint">−7 top of head · 0 centre · +7 feet</small></span>
 					<div class="slider-row"><input class="slider centred" type="range" min="-7" max="7" step="1" data-setting="track_offset" /><output class="value num"></output></div></div>
-				<div class="row col"><span>Motion smoothing <small class="hint">0 snappy · 10 silky and cinematic</small></span>
+				<div class="row col manual-only"><span>Motion smoothing <small class="hint">0 snappy · 10 silky and cinematic</small></span>
 					<div class="slider-row"><input class="slider" type="range" min="0" max="10" step="1" data-setting="motion_smooth" /><output class="value num"></output></div></div>
 				<div class="row"><span>Motion Sync <small class="hint">pan, tilt & zoom reach presets together</small></span>
 					<input type="checkbox" class="switch" data-setting="motion_sync" /></div>
 			</div>
+			<p class="hint pad auto-only">Auto mode is choosing the speeds, dead zones and smoothing below. Turn Auto off to set them by hand.</p>
 			<h3 class="eyebrow sub">Speed</h3>
-			<div class="card" data-tone="green">
+			<div class="card manual-only" data-tone="green">
 				<div class="row"><span>Pan · slow</span><div class="stepper" data-setting="pan_slow" data-min="1" data-max="24"><button data-step="-1">−</button><input type="number" /><button data-step="1">+</button></div></div>
 				<div class="row"><span>Pan · fast</span><div class="stepper" data-setting="pan_fast" data-min="1" data-max="24"><button data-step="-1">−</button><input type="number" /><button data-step="1">+</button></div></div>
 				<div class="row"><span>Tilt · slow</span><div class="stepper" data-setting="tilt_slow" data-min="1" data-max="24"><button data-step="-1">−</button><input type="number" /><button data-step="1">+</button></div></div>
 				<div class="row"><span>Tilt · fast</span><div class="stepper" data-setting="tilt_fast" data-min="1" data-max="24"><button data-step="-1">−</button><input type="number" /><button data-step="1">+</button></div></div>
 			</div>
 			<h3 class="eyebrow sub">Dead zones</h3>
-			<div class="card" data-tone="green">
+			<div class="card manual-only" data-tone="green">
 				<div class="row col"><span>Pan <small class="hint">how far the subject can drift before the camera follows</small></span>
 					<div class="slider-row"><input class="slider" type="range" min="0.02" max="0.3" step="0.01" data-setting="pan_dead" data-fixed="2" /><output class="value num"></output></div></div>
 				<div class="row col"><span>Tilt</span>

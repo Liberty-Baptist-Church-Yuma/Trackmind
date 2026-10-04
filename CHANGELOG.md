@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.8.2 — 2026-09-30
+
+### Auto mode
+- **New Auto button** (key `A`, Stream Deck/API `auto`). Trackmind sets the speed, dead zones and smoothing itself, to suit the shot and what the speaker is doing. There are no speeds to tune per zoom or per room.
+- **Learns your camera.** It measures the camera's own motion from the video (the background shifting between frames) and compares it with the speeds it sent. From that it learns how far each speed step moves the picture at the current zoom, and the real video delay. It keeps learning, re-adjusts after zooming, and remembers what it learned.
+- **No overshoot from video delay.** It steers toward where the speaker will be once the moves already sent show up on video.
+- **Situations.** *Steady* for a still speaker (wide dead zone, gentle re-centring), *Following* for walking (matches the speaker's pace and closes the gap gently), and *Catching up* only when the speaker is near the edge of the frame or moving fast.
+- **No bounce.** After a move it holds rather than swinging back for a small overshoot. If the camera ever starts going back and forth, it eases itself off, and turnarounds by a pacing speaker don't count.
+- **Styles:** Calm, Balanced, Responsive.
+- In simulation across wide, medium and tight shots with 0.3–0.5 s video delay, Auto framed slightly better than a well-tuned manual profile, with about 5× fewer stop-starts. `tests/test_autopilot.py` checks this on every build.
+
+## v1.8.1 — 2026-09-30
+
+### Smoother tracking
+- **No more parking on the dead-zone edge.** The camera used to stop the moment the subject crossed into the dead zone, leaving them on its edge where every small step restarted it: stop-start hunting. A move now carries on, easing down to a crawl, until the subject is near center. It also ends if the subject crosses center, so an overshoot doesn't turn into a swing back.
+- **Brakes faster than it accelerates.** The smoothing ramp used to apply equally to slowing down. Combined with video delay, that carried the camera past the subject.
+- **Missed detections don't jolt the camera.** A single dropped frame (a turn, an occlusion, motion blur) used to send a stop and restart the speed ramp from zero. The camera now eases off for up to 0.45 s while the subject is re-found.
+- **Gestures don't steer the camera.** The aim point and auto-zoom fill now come from the torso (shoulders and hips) instead of a box that included the elbows, and an adaptive filter removes pose jitter.
+- **Auto-zoom zooms to the target** instead of stopping at the edge of the zoom dead band.
+
+### Lock-on
+- **Another person can't steal the lock.** MediaPipe Pose only reports one person. Previously a more prominent person took the detection and the locked subject became invisible. While locked, pose now runs on a crop around the subject.
+- **A fast exit no longer leaves the lock stuck.** It used to search only within 25% of the frame around where the subject was last seen, forever, until LOCK was toggled off. It now searches where the subject was heading and widens the search over time to the whole frame. After the camera returns home, the lock re-acquires.
+
+### Diagnostics and tests
+- **Tracking flight recorder** (`diagnostics.py`). Records detections and camera commands to daily files with 30-day retention. `python diagnostics.py` reports hunting, stop-start stutter, high speed, detection dropouts, lock rejections, stream drops and low fps, each with a suggested fix.
+- **Test suite** (`tests/`, run with `python -m pytest tests`). Covers the speed curve, smoothing, dropouts, a closed-loop simulation with video latency, lock behaviour (including a fast exit), and diagnostics retention. Runs in CI on every push.
+
 ## v1.8 — 2026-09-24
 
 ### Pulpit anchor

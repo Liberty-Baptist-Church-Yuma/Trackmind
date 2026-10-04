@@ -38,6 +38,9 @@ except ImportError:
 
 import numpy as np
 
+from diagnostics import DiagnosticsLog, NULL_DIAG
+from autopilot import AutoPilot, EgoMotion, STYLES as AUTO_STYLES
+
 
 def _read_version():
     if getattr(sys, 'frozen', False):
@@ -89,6 +92,16 @@ class Settings:
 
         self.latency_comp = 0.4
         self.lost_timeout = 2.0
+
+        # Auto mode (autopilot.py): picks speeds, dead zones and smoothing by
+        # itself from what it learns about the camera and the situation.
+        # The auto_gain/latency values are learned live and remembered for the
+        # next start; they belong to the camera, not to a profile.
+        self.auto_mode      = False
+        self.auto_style     = "balanced"   # calm | balanced | responsive
+        self.auto_gain_pan  = 0.10
+        self.auto_gain_tilt = 0.10
+        self.auto_latency   = 0.35
 
         self.track_focus  = 'upper'
         self.track_offset = 2
@@ -156,6 +169,11 @@ class Settings:
             "latency_comp": self.latency_comp,
             "lost_timeout": self.lost_timeout,
             "track_offset": self.track_offset,
+            "auto_mode":      self.auto_mode,
+            "auto_style":     self.auto_style,
+            "auto_gain_pan":  self.auto_gain_pan,
+            "auto_gain_tilt": self.auto_gain_tilt,
+            "auto_latency":   self.auto_latency,
             "anchor_enabled": self.anchor_enabled,
             "anchor_preset":  self.anchor_preset,
             "anchor_range":   self.anchor_range,
@@ -204,6 +222,7 @@ class Settings:
             "motion_sync": self.motion_sync, "motion_smooth": self.motion_smooth,
             "latency_comp": self.latency_comp, "lost_timeout": self.lost_timeout,
             "track_offset": self.track_offset,
+            "auto_mode": self.auto_mode, "auto_style": self.auto_style,
             "anchor_enabled": self.anchor_enabled, "anchor_preset": self.anchor_preset,
             "anchor_range": self.anchor_range, "anchor_dwell": self.anchor_dwell,
             "anchor_hold": self.anchor_hold,
@@ -304,6 +323,10 @@ class ProfileManager:
 
 
 PROFILE_MANAGER = ProfileManager()
+
+# Flight recorder for tracking behaviour (see diagnostics.py). Day files under
+# ~/.trackmind/<user>/diagnostics, kept for 30 days.
+DIAG = DiagnosticsLog(os.path.join(Settings._config_dir(), "diagnostics"))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -672,25 +695,42 @@ def zone_speed(pos, dead, near, slow, fast) -> int:
     return speed if err > 0 else -speed
 
 
-def smooth_speed(pos, dead, slow, fast) -> float:
-    """
-    Continuous proportional speed (float).
+SETTLE_FRAC = 0.35   # a move started at the dead-zone edge carries on until the
+                     # subject is this fraction of the dead zone from centre
 
-    Returns 0 inside the dead zone, then eases from `slow` (just outside the
-    dead zone) up to `fast` (frame edge) along a smoothstep curve. Unlike the
-    old discrete zone_speed — which snapped between slow and fast like a gear
-    change — the speed glides, so there is no visible jump as the subject
-    drifts. Sign follows the error direction.
+
+def smooth_speed(pos, dead, slow, fast, active=0):
     """
-    err = pos - 0.5
-    mag = abs(err)
-    if mag < dead:
-        return 0.0
-    span  = max(1e-6, 0.5 - dead)
-    norm  = min(1.0, (mag - dead) / span)
-    eased = norm * norm * (3.0 - 2.0 * norm)   # smoothstep, 0..1
-    speed = slow + (fast - slow) * eased
-    return speed if err > 0 else -speed
+    Continuous proportional speed (float) with hysteresis.
+
+    Returns (speed, active). `active` is the direction the axis is currently
+    re-centring in (+1/-1) or 0 when idle; pass the previous value back in.
+
+    Outside the dead zone the speed eases from `slow` up to `fast` (frame
+    edge) along a smoothstep curve. Once a move has started it does NOT stop
+    at the dead-zone edge — it keeps going, easing down to a crawl, until the
+    subject is close to centre. Stopping right at the edge left the subject
+    parked on the boundary, where every small step restarted the camera:
+    the constant stop-start "hunting" look. A move ends early if the subject
+    crosses centre, so an overshoot never turns into a reversal.
+    """
+    err  = pos - 0.5
+    mag  = abs(err)
+    side = 1 if err > 0 else -1
+    settle = dead * SETTLE_FRAC
+    if mag >= dead:
+        span  = max(1e-6, 0.5 - dead)
+        norm  = min(1.0, (mag - dead) / span)
+        eased = norm * norm * (3.0 - 2.0 * norm)   # smoothstep, 0..1
+        speed = slow + (fast - slow) * eased
+        active = side
+    elif active == side and mag > settle:
+        # Coming home: ease from `slow` at the edge down to the minimum speed
+        frac  = (mag - settle) / max(1e-6, dead - settle)
+        speed = 1.0 + (max(1.0, slow) - 1.0) * frac
+    else:
+        return 0.0, 0
+    return speed * side, active
 
 
 # ─────────────────────────────────────────────────────────────
@@ -698,25 +738,50 @@ def smooth_speed(pos, dead, slow, fast) -> float:
 # ─────────────────────────────────────────────────────────────
 
 class PersonDetector:
-    BODY_LANDMARKS = [0, 11, 12, 13, 14, 23, 24]  # nose, shoulders, elbows, hips
+    LOCK_DIST     = 0.25   # frame fraction a locked subject may move between detections
+    LOCK_GROW     = 0.30   # search radius growth per second while the subject is unseen
+    LOCK_MAX_DIST = 0.75   # ≈ whole frame: a lock never gets stuck searching one spot
+    LOCK_CROP     = 0.32   # min half-width of the region searched while locked
+    LOCK_PREDICT  = 1.0    # s — max time the subject's last velocity is extrapolated
 
-    def __init__(self):
+    def __init__(self, diag=None):
         self.mp_pose     = mp.solutions.pose
-        self.pose        = self.mp_pose.Pose(
+        self.pose        = self._make_pose()
+        # Locked mode runs on a crop around the subject. A separate instance
+        # keeps MediaPipe's frame-to-frame tracking state consistent with the
+        # crop, instead of mixing crops and full frames in one tracker.
+        self.pose_locked = self._make_pose()
+        self.diag        = diag or NULL_DIAG
+        self._locked_cx  = None
+        self._locked_cy  = None
+        self._lock_seen  = 0.0
+        self._lock_vx    = 0.0    # subject velocity in frame fractions / s,
+        self._lock_vy    = 0.0    # so a fast exit is searched where it went
+
+    def _lock_update(self, cx, cy, now):
+        dt = now - self._lock_seen
+        if self._locked_cx is not None and 0.0 < dt < 0.5:
+            a = 0.3
+            self._lock_vx = (1 - a) * self._lock_vx + a * (cx - self._locked_cx) / dt
+            self._lock_vy = (1 - a) * self._lock_vy + a * (cy - self._locked_cy) / dt
+        elif self._locked_cx is None:
+            self._lock_vx = self._lock_vy = 0.0
+        self._locked_cx, self._locked_cy, self._lock_seen = cx, cy, now
+
+    def _make_pose(self):
+        return self.mp_pose.Pose(
             static_image_mode=False,
             model_complexity=1,
             smooth_landmarks=True,
             min_detection_confidence=0.55,
             min_tracking_confidence=0.5,
         )
-        self._locked_cx  = None
-        self._locked_cy  = None
-        self._lock_dist  = 0.25
 
-    # Landmark sets
-    UPPER_LANDMARKS = [0, 11, 12, 13, 14, 23, 24]          # nose, shoulders, elbows, hips
-    FULL_LANDMARKS  = [0, 11, 12, 13, 14, 23, 24, 25, 26]  # upper + knees
-    LOWER_LANDMARKS = [23, 24, 25, 26, 27, 28]             # hips, knees, ankles
+    # Landmark sets. Elbows/wrists are left out on purpose: a speaker's
+    # gestures would drag the aim point (and the zoom fill) around with them.
+    UPPER_LANDMARKS = [0, 11, 12, 23, 24]          # nose, shoulders, hips
+    FULL_LANDMARKS  = [0, 11, 12, 23, 24, 25, 26]  # upper + knees
+    LOWER_LANDMARKS = [23, 24, 25, 26, 27, 28]     # hips, knees, ankles
 
     def _landmarks_to_bbox(self, lms):
         focus  = SETTINGS.track_focus
@@ -746,7 +811,11 @@ class PersonDetector:
         y0 = max(0.0, y0 - pad_y)
         y1 = min(1.0, y1 + pad_y)
 
-        cx = (x0 + x1) / 2
+        # Horizontal aim follows the torso centre line (shoulder/hip
+        # midpoints) when visible — steadier than the bbox middle, which
+        # shifts whenever a landmark flickers in or out of visibility.
+        torso = [lms[i] for i in (11, 12, 23, 24) if lms[i].visibility > 0.4]
+        cx = (sum(l.x for l in torso) / len(torso)) if len(torso) >= 2 else (x0 + x1) / 2
         cy = (y0 + y1) / 2
 
         # Base vertical adjustment per mode
@@ -768,57 +837,141 @@ class PersonDetector:
         hard_lock=False (default): follows most prominent person,
                                    updates lock position each frame freely.
         hard_lock=True:  strictly ignores anyone too far from locked position.
+
+        MediaPipe Pose only ever returns ONE person — whoever it judges most
+        prominent. So a lock can't just filter full-frame results: once a
+        second person steals the detection, the locked subject is invisible
+        until they leave. Instead, while locked, pose runs on a crop around
+        the subject's last position, so other people are mostly outside the
+        image the model sees.
         """
-        results = self.pose.process(frame_rgb)
+        now = time.monotonic()
+        if not hard_lock or self._locked_cx is None:
+            bbox = self._detect_in(self.pose, frame_rgb, 0.0, 1.0)
+            if bbox is None:
+                return None
+            if hard_lock:
+                print(f"[LOCK] Acquired at ({bbox[0]:.2f}, {bbox[1]:.2f})")
+                self.diag.event("lock", ev="acquired", cx=bbox[0], cy=bbox[1])
+            # Unlocked — follow whoever MediaPipe sees, update position freely
+            self._lock_update(bbox[0], bbox[1], now)
+            return bbox
+
+        # Locked: search where the subject is heading, not where they were
+        # last seen, and widen the search the longer they're unseen. The old
+        # fixed 0.25 radius around the last position meant a subject who left
+        # quickly was never found again until the lock was toggled off.
+        unseen = max(0.0, now - self._lock_seen)
+        ahead  = min(unseen, self.LOCK_PREDICT)
+        px = min(1.0, max(0.0, self._locked_cx + self._lock_vx * ahead))
+        py = min(1.0, max(0.0, self._locked_cy + self._lock_vy * ahead))
+        radius = min(self.LOCK_MAX_DIST, self.LOCK_DIST + self.LOCK_GROW * unseen)
+        half   = max(self.LOCK_CROP, radius + 0.05)
+        bbox   = self._detect_in(self.pose_locked, frame_rgb, px - half, px + half)
+        if bbox is None:
+            return None
+        cx, cy = bbox[0], bbox[1]
+        dist = math.hypot(cx - px, cy - py)
+        if dist < radius:
+            if unseen > 0.5:
+                print(f"[LOCK] Reacquired after {unseen:.1f}s at ({cx:.2f}, {cy:.2f})")
+                self.diag.event("lock", ev="reacquired", unseen=unseen, cx=cx, cy=cy)
+            self._lock_update(cx, cy, now)
+            return bbox
+        self.diag.event("lock", throttle=0.5, ev="reject", dist=dist, radius=radius)
+        return None
+
+    def _detect_in(self, pose, frame_rgb, x_lo, x_hi):
+        """Run pose on the vertical strip x_lo..x_hi (frame fractions); bbox in full-frame coords."""
+        W = frame_rgb.shape[1]
+        a = max(0, int(x_lo * W))
+        b = min(W, int(math.ceil(x_hi * W)))
+        if b - a < W // 8:
+            return None
+        crop = frame_rgb if (a == 0 and b == W) else np.ascontiguousarray(frame_rgb[:, a:b])
+        results = pose.process(crop)
         if not results.pose_landmarks:
             return None
         bbox = self._landmarks_to_bbox(results.pose_landmarks.landmark)
         if bbox is None:
             return None
         cx, cy, w, h = bbox
-
-        if not hard_lock:
-            # Unlocked — follow whoever MediaPipe sees, update position freely
-            self._locked_cx = cx
-            self._locked_cy = cy
-            return bbox
-
-        # Hard lock mode — only follow if close to last known position
-        if self._locked_cx is None:
-            print(f"[LOCK] Acquired at ({cx:.2f}, {cy:.2f})")
-            self._locked_cx = cx
-            self._locked_cy = cy
-            return bbox
-        dist = math.sqrt((cx - self._locked_cx)**2 + (cy - self._locked_cy)**2)
-        if dist < self._lock_dist:
-            self._locked_cx = cx
-            self._locked_cy = cy
-            return bbox
-        return None
+        k = (b - a) / W
+        return a / W + cx * k, cy, w * k, h
 
     def release_lock(self):
         self._locked_cx = None
         self._locked_cy = None
+        self._lock_vx = self._lock_vy = 0.0
+        self.diag.event("lock", ev="released")
         print("[LOCK] Released — will reacquire")
 
     def close(self):
         self.pose.close()
+        self.pose_locked.close()
 
 
 # ─────────────────────────────────────────────────────────────
 # Auto-Tracker
 # ─────────────────────────────────────────────────────────────
 
+class OneEuroFilter:
+    """
+    Adaptive low-pass filter (Casiez et al., "1€ filter"). Heavy smoothing
+    while the value is nearly still — kills pose jitter that would otherwise
+    nudge the camera — and light smoothing when it moves fast, so a walking
+    subject isn't followed late.
+    """
+    def __init__(self, min_cutoff=1.0, beta=4.0, d_cutoff=1.0):
+        self.min_cutoff, self.beta, self.d_cutoff = min_cutoff, beta, d_cutoff
+        self.reset()
+
+    def reset(self):
+        self._x = self._dx = None
+
+    @staticmethod
+    def _alpha(cutoff, dt):
+        tau = 1.0 / (2 * math.pi * cutoff)
+        return 1.0 / (1.0 + tau / dt)
+
+    def __call__(self, x, dt):
+        if self._x is None:
+            self._x, self._dx = x, 0.0
+            return x
+        dt = max(1e-3, dt)
+        dx = (x - self._x) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        self._dx = a_d * dx + (1 - a_d) * self._dx
+        a = self._alpha(self.min_cutoff + self.beta * abs(self._dx), dt)
+        self._x = a * x + (1 - a) * self._x
+        return self._x
+
+
 class AutoTracker:
     CMD_INTERVAL = 0.10   # min seconds between VISCA move commands (anti-flood)
+    COAST_TIME   = 0.45   # s a missed detection is bridged before the camera stops
+    DECEL_GAIN   = 2.5    # slowing down may ramp this much faster than speeding up
+    VEL_SMOOTH   = 0.15   # EMA weight of each new image-velocity measurement
+    VEL_MAX      = 0.3    # frame widths / s cap on the velocity used for prediction
 
-    def __init__(self, visca: VISCAController):
+    def __init__(self, visca: VISCAController, diag=None):
         self.visca         = visca
+        self.diag          = diag or NULL_DIAG
         self._last_seen    = None
         self._at_home      = False
         self._prev_pan     = 0
         self._prev_tilt    = 0
         self._prev_zoom    = 0
+        self._pan_active   = 0       # smooth_speed hysteresis state per axis
+        self._tilt_active  = 0
+        self._f_cx         = OneEuroFilter()
+        self._f_cy         = OneEuroFilter()
+        self._f_h          = OneEuroFilter(min_cutoff=0.5, beta=1.0)
+        self._last_det_t   = None
+        self.fps           = 0.0     # set by the tracker thread, for diagnostics
+        s = SETTINGS
+        self.pilot         = AutoPilot(s.auto_gain_pan, s.auto_gain_tilt, s.auto_latency)
+        self._pilot_fits   = 0
         self._last_cmd_t   = 0.0
         self._last_cx      = None
         self._last_cy      = None
@@ -906,6 +1059,8 @@ class AutoTracker:
             self.visca.recall_preset(s.anchor_preset)
         self._pan_cmd = self._tilt_cmd = 0.0
         self._prev_pan = self._prev_tilt = 0
+        self.pilot.on_command(now, 0, 0)
+        self.pilot.blackout(now, self.ANCHOR_MAX[self._anchor_mode] + 1.0)
         self.anchor_state, self._anchor_t = "snapping", now
         return True
 
@@ -916,16 +1071,88 @@ class AutoTracker:
             return min(target, current + max_delta)
         return max(target, current - max_delta)
 
+    def _slew(self, current, target, dt):
+        """
+        Ease the commanded speed toward target. motion_smooth sets how gentle
+        the ramp is (0 = snap). Braking is allowed DECEL_GAIN× quicker than
+        speeding up: with video latency on top, a slow brake is what carried
+        the camera past the subject and made it swing back.
+        """
+        s = SETTINGS
+        if s.motion_smooth <= 0:
+            return target
+        accel = max(8.0, 120.0 / s.motion_smooth)   # speed units / second
+        if abs(target) < abs(current) or target * current < 0:
+            accel *= self.DECEL_GAIN
+        return self._approach(current, target, accel * dt)
+
+    def _send_move(self, now, force=False):
+        pan_vel  = int(round(self._pan_cmd))
+        tilt_vel = int(round(self._tilt_cmd))
+        # Rate-limited send: only when the integer speed changes and the
+        # minimum interval has elapsed — keeps the VISCA socket from flooding
+        # while still updating often enough to look continuous. A stop always
+        # goes out immediately.
+        stopping = pan_vel == 0 and tilt_vel == 0
+        if (pan_vel != self._prev_pan or tilt_vel != self._prev_tilt) and \
+           (force or stopping or (now - self._last_cmd_t) >= self.CMD_INTERVAL):
+            self.visca.move(pan_vel, tilt_vel)
+            self.pilot.on_command(now, pan_vel, tilt_vel)
+            self.diag.event("cmd", pan=pan_vel, tilt=tilt_vel)
+            self._prev_pan   = pan_vel
+            self._prev_tilt  = tilt_vel
+            self._last_cmd_t = now
+
+    def _coast(self, now):
+        """
+        Detection dropped for a frame or two (a turn, an occlusion, motion
+        blur). Ease off instead of slamming to a stop and restarting from zero
+        on the next frame — that stop/start was a big source of jerkiness.
+        """
+        dt = max(0.001, min(0.25, now - self._last_motion_t))
+        self._last_motion_t = now
+        if SETTINGS.auto_mode:
+            self._pan_cmd, self._tilt_cmd = self.pilot.coast(now)
+        else:
+            self._pan_cmd  = self._slew(self._pan_cmd,  0.0, dt)
+            self._tilt_cmd = self._slew(self._tilt_cmd, 0.0, dt)
+        self._send_move(now)
+
+    def observe_ego(self, now, bx, by, conf):
+        """Camera's own motion measured from the video (auto mode only)."""
+        if self._prev_zoom != 0:
+            conf = 0.0          # zooming scales the picture; not a pan/tilt shift
+        self.pilot.on_ego(now, bx, by, conf)
+        if self.pilot.model.fits != self._pilot_fits:
+            self._pilot_fits = self.pilot.model.fits
+            m = self.pilot.model
+            SETTINGS.auto_gain_pan, SETTINGS.auto_gain_tilt = (round(g, 5) for g in m.gain)
+            SETTINGS.auto_latency = round(m.latency, 3)
+
     def process(self, detection):
+        now = time.monotonic()
         if detection is None:
-            self._handle_lost()
+            if (self._last_seen is not None and not self._at_home
+                    and now - self._last_seen < self.COAST_TIME
+                    and self.anchor_state == "free"):
+                self.diag.event("coast", throttle=0.5)
+                self._coast(now)
+                self._sample(None, now)
+            else:
+                self._handle_lost()
+                self._sample(None, now)
             return
 
         s   = SETTINGS
-        now = time.monotonic()
         self._at_home = False
 
         cx, cy, bbox_w, bbox_h = detection
+        raw_cx, raw_cy = cx, cy
+        fdt = (now - self._last_det_t) if self._last_det_t else 0.04
+        self._last_det_t = now
+        cx     = self._f_cx(cx, fdt)
+        cy     = self._f_cy(cy, fdt)
+        bbox_h = self._f_h(bbox_h, fdt)
 
         if self._anchor(now, cx):
             # Holding the pulpit shot: the preset owns pan, tilt and zoom
@@ -933,18 +1160,28 @@ class AutoTracker:
             self._last_motion_t = now
             return
 
+        if s.auto_mode:
+            self._last_seen = self._last_motion_t = now
+            self._pan_cmd, self._tilt_cmd = self.pilot.step(now, cx, cy, bbox_h, s.auto_style)
+            self._vx = self.pilot.axes[0].w      # the anchor's "settled" check reads this
+            self._send_move(now)
+            self._sample((raw_cx, raw_cy, cx, cy, bbox_h, cx), now)
+            self._zoom(s, bbox_h, now)
+            return
+
         # Velocity prediction
         dt = max(0.01, min(0.5, (now - self._last_seen) if self._last_seen else 0.1))
         if self._last_cx is not None:
             vx = (cx - self._last_cx) / dt
             vy = (cy - self._last_cy) / dt
-            self._vx = 0.85 * self._vx + 0.15 * vx
-            self._vy = 0.85 * self._vy + 0.15 * vy
+            a = self.VEL_SMOOTH
+            self._vx = (1 - a) * self._vx + a * vx
+            self._vy = (1 - a) * self._vy + a * vy
         self._last_cx   = cx
         self._last_cy   = cy
         self._last_seen = now
 
-        max_v  = 0.3
+        max_v  = self.VEL_MAX
         self._vx = max(-max_v, min(max_v, self._vx))
         self._vy = max(-max_v, min(max_v, self._vy))
 
@@ -953,45 +1190,41 @@ class AutoTracker:
 
         # Continuous proportional targets (float). Negative sign keeps the
         # existing image->camera direction convention.
-        pan_target  = -smooth_speed(pred_cx, s.pan_dead,  s.pan_slow,  s.pan_fast)
-        tilt_target = -smooth_speed(pred_cy, s.tilt_dead, s.tilt_slow, s.tilt_fast)
+        pan_speed,  self._pan_active  = smooth_speed(pred_cx, s.pan_dead,  s.pan_slow,
+                                                     s.pan_fast,  self._pan_active)
+        tilt_speed, self._tilt_active = smooth_speed(pred_cy, s.tilt_dead, s.tilt_slow,
+                                                     s.tilt_fast, self._tilt_active)
+        pan_target, tilt_target = -pan_speed, -tilt_speed
 
         # Slew-rate limit: ease the commanded speed toward the target so the
-        # camera accelerates and decelerates gradually. motion_smooth controls
-        # how gentle that ramp is; 0 disables it (snap straight to target).
+        # camera accelerates and decelerates gradually.
         dt_motion = max(0.001, min(0.25, now - self._last_motion_t))
         self._last_motion_t = now
-        if s.motion_smooth > 0:
-            accel     = max(8.0, 120.0 / s.motion_smooth)   # speed units / second
-            max_delta = accel * dt_motion
-            self._pan_cmd  = self._approach(self._pan_cmd,  pan_target,  max_delta)
-            self._tilt_cmd = self._approach(self._tilt_cmd, tilt_target, max_delta)
-        else:
-            self._pan_cmd, self._tilt_cmd = pan_target, tilt_target
+        self._pan_cmd  = self._slew(self._pan_cmd,  pan_target,  dt_motion)
+        self._tilt_cmd = self._slew(self._tilt_cmd, tilt_target, dt_motion)
+        self._send_move(now)
+        self._sample((raw_cx, raw_cy, cx, cy, bbox_h, pred_cx), now)
+        self._zoom(s, bbox_h, now)
 
-        pan_vel  = int(round(self._pan_cmd))
-        tilt_vel = int(round(self._tilt_cmd))
-
-        # Rate-limited send: only when the integer speed changes and the
-        # minimum interval has elapsed — keeps the VISCA socket from flooding
-        # while still updating often enough to look continuous.
-        if (pan_vel != self._prev_pan or tilt_vel != self._prev_tilt) and \
-           (now - self._last_cmd_t) >= self.CMD_INTERVAL:
-            self.visca.move(pan_vel, tilt_vel)
-            self._prev_pan   = pan_vel
-            self._prev_tilt  = tilt_vel
-            self._last_cmd_t = now
-
-        # Zoom
+    def _zoom(self, s, bbox_h, now):
+        # Zoom — once started, keep going until the fill is near the target
+        # rather than stopping at the band edge (same hunting fix as pan/tilt).
         if s.zoom_enabled:
-            fill = bbox_h
-            if fill < (s.zoom_target - s.zoom_dead):
+            fill   = bbox_h
+            settle = s.zoom_dead * 0.4
+            if self._prev_zoom == 1 and fill < s.zoom_target - settle:
+                zoom_dir = 1
+            elif self._prev_zoom == -1 and fill > s.zoom_target + settle:
+                zoom_dir = -1
+            elif fill < (s.zoom_target - s.zoom_dead):
                 zoom_dir = 1
             elif fill > (s.zoom_target + s.zoom_dead):
                 zoom_dir = -1
             else:
                 zoom_dir = 0
             if zoom_dir != self._prev_zoom:
+                self.diag.event("zoom", dir=zoom_dir, fill=fill)
+                self.pilot.on_zoom(now, zoom_dir, fill)
                 if zoom_dir == 1:
                     self.visca.zoom_in(speed=s.zoom_speed)
                 elif zoom_dir == -1:
@@ -1007,6 +1240,7 @@ class AutoTracker:
     def _handle_lost(self):
         if self._prev_pan != 0 or self._prev_tilt != 0:
             self.visca.stop()
+            self.pilot.on_command(time.monotonic(), 0, 0)
             self._prev_pan  = 0
             self._prev_tilt = 0
         if self._prev_zoom != 0:
@@ -1018,12 +1252,15 @@ class AutoTracker:
         self._tilt_cmd = 0.0
         self._last_cx = None
         self._last_cy = None
+        self._reset_filters()
         if self._at_home:
             return
         elapsed = (time.monotonic() - self._last_seen) if self._last_seen else 999
         if elapsed >= SETTINGS.lost_timeout:
             print(f"[TRACKER] Lost — recalling preset {SETTINGS.home_preset}")
+            self.diag.event("lost", preset=SETTINGS.home_preset, unseen=elapsed)
             self.visca.recall_preset(SETTINGS.home_preset)
+            self.pilot.blackout(time.monotonic(), 6.0)
             self._at_home = True
             self.anchor_state = "free"
             self._still_since = None
@@ -1036,6 +1273,35 @@ class AutoTracker:
         self._prev_pan = self._prev_tilt = self._prev_zoom = 0
         self.anchor_state = "free"
         self._still_since = self._outside_since = None
+        self._reset_filters()
+        # Manual moves while paused weren't logged as commands: don't learn
+        # from the first moment of motion after resuming.
+        self.pilot.on_command(time.monotonic(), 0, 0)
+        self.pilot.blackout(time.monotonic(), 1.0)
+
+    def _sample(self, det, now):
+        """~10/s snapshot for the diagnostics recorder."""
+        if det is None:
+            self.diag.sample(det=0, home=int(self._at_home), pc=self._pan_cmd,
+                             tc=self._tilt_cmd, anchor=self.anchor_state, fps=self.fps)
+            return
+        raw_cx, raw_cy, cx, cy, h, pred_cx = det
+        rec = dict(det=1, rx=raw_cx, ry=raw_cy, cx=cx, cy=cy, h=h, px=pred_cx,
+                   vx=self._vx, pc=self._pan_cmd, tc=self._tilt_cmd,
+                   pa=self._pan_active, ta=self._tilt_active,
+                   z=self._prev_zoom, anchor=self.anchor_state, fps=self.fps)
+        if SETTINGS.auto_mode:
+            p, m = self.pilot, self.pilot.model
+            rec.update(auto=1, sit=p.situation, w=p.axes[0].w, b=p.axes[0].b_ego,
+                       g=m.gain[0], gt=m.gain[1], L=m.latency, soft=p.soften,
+                       pa=p.axes[0].active, ta=p.axes[1].active)
+        self.diag.sample(**rec)
+
+    def _reset_filters(self):
+        self.pilot.reset()
+        self._pan_active = self._tilt_active = 0
+        self._f_cx.reset(); self._f_cy.reset(); self._f_h.reset()
+        self._last_det_t = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1086,7 +1352,7 @@ class TrackerThread(threading.Thread):
             ret, frame = cap.read()
             if ret and frame is not None:
                 with self._buf_lock:
-                    self._buf_frame = frame
+                    self._buf_frame = (frame, time.monotonic())
                 self._buf_ready.set()
             else:
                 time.sleep(0.005)
@@ -1114,8 +1380,10 @@ class TrackerThread(threading.Thread):
         visca    = VISCAController()
         visca.connect()
         visca.set_motion_sync(SETTINGS.motion_sync)
-        detector = PersonDetector()
-        tracker  = AutoTracker(visca)
+        detector = PersonDetector(diag=DIAG)
+        tracker  = AutoTracker(visca, diag=DIAG)
+        ego      = EgoMotion()
+        DIAG.event("stream", ev="connected", stream=s.rtsp_stream)
 
         self.app.visca    = visca
         self.app.detector = detector
@@ -1140,6 +1408,7 @@ class TrackerThread(threading.Thread):
             # Wait up to 3s for a fresh frame
             if not self._buf_ready.wait(timeout=3.0):
                 print("[CAP] No frame received — reconnecting...")
+                DIAG.event("stream", ev="drop")
                 buf_stop.set()
                 buf_thread.join(timeout=2.0)
                 cap.release()
@@ -1158,11 +1427,12 @@ class TrackerThread(threading.Thread):
             # Grab latest frame and immediately clear ready flag
             self._buf_ready.clear()
             with self._buf_lock:
-                frame = self._buf_frame
+                item = self._buf_frame
                 self._buf_frame = None
 
-            if frame is None:
+            if item is None:
                 continue
+            frame, frame_t = item
 
             frame_count += 1
             if frame_count == 1:
@@ -1179,11 +1449,25 @@ class TrackerThread(threading.Thread):
 
             if self.tracking:
                 hard_lock = self.app.lock_active
+                tracker.fps = self.fps
+                if SETTINGS.auto_mode:
+                    m = ego.update(frame, frame_t)
+                    if m:
+                        tracker.observe_ego(frame_t, *m)
+                else:
+                    ego.reset()
                 detection = detector.detect(rgb, hard_lock=hard_lock)
+                was_home  = tracker._at_home
                 tracker.process(detection)
+                if tracker._at_home and not was_home:
+                    # The home preset reframes everything, so the lock's last
+                    # position means nothing now. Without this the lock waited
+                    # forever for someone to reappear at the old spot.
+                    detector.release_lock()
                 self.latest_detection = detection
                 self.status = "TRACKING"
             else:
+                ego.reset()
                 detection = None
                 self.latest_detection = None
                 if self.status == "TRACKING":
@@ -1249,6 +1533,8 @@ SETTINGS_SCHEMA = {
     "zoom_speed":    _clamp_int(0, 7),
     "latency_comp":  _clamp_float(0.0, 2.0),
     "lost_timeout":  _clamp_float(1.0, 10.0, 1),
+    "auto_mode":     _as_bool,
+    "auto_style":    lambda v: str(v).strip().lower() if str(v).strip().lower() in AUTO_STYLES else "balanced",
     "anchor_enabled": _as_bool,
     "anchor_preset":  _clamp_int(0, 89),
     "anchor_range":   _clamp_int(1, 10),
@@ -1262,8 +1548,15 @@ SETTINGS_SCHEMA = {
 
 # Commands the external Control API (Stream Deck, Companion…) may call.
 # Everything else needs the UI token.
-PUBLIC_COMMANDS = {"tracking", "lock", "autozoom", "motion-sync", "preset",
+PUBLIC_COMMANDS = {"tracking", "lock", "autozoom", "auto", "motion-sync", "preset",
                    "home", "profile", "move", "zoom", "adjust", "anchor"}
+
+
+_DIAG_PRIVATE = {"rtsp_user", "rtsp_pass", "camera_ip"}
+
+def _diag_settings():
+    """Settings snapshot for diagnostics — no credentials."""
+    return {k: v for k, v in SETTINGS.to_dict().items() if k not in _DIAG_PRIVATE}
 
 
 class Controller:
@@ -1343,6 +1636,7 @@ class Controller:
         if self._save_timer:
             self._save_timer.cancel()
         SETTINGS.save()
+        DIAG.close()
         t = self._thread
         if t:
             t.tracking = False
@@ -1371,6 +1665,8 @@ class Controller:
             if not (t and t.running):
                 return False
             t.tracking = bool(on)
+            DIAG.event("session", ev="on" if on else "off",
+                       settings=_diag_settings() if on else None)
             if on:
                 if self.tracker: self.tracker.reset()
             else:
@@ -1384,6 +1680,7 @@ class Controller:
             if not self.tracking_on:
                 return False
             self.lock_active = bool(on)
+            DIAG.event("lock", ev="on" if on else "off")
             if not on and self.detector:
                 self.detector.release_lock()
             return True
@@ -1394,6 +1691,14 @@ class Controller:
             if not on and self.visca:
                 try: self.visca.zoom_stop()
                 except Exception: pass
+
+    def set_auto(self, on):
+        with self._lock:
+            if SETTINGS.auto_mode != bool(on):
+                SETTINGS.auto_mode = bool(on)
+                if self.tracker:
+                    self.tracker._reset_filters()
+                DIAG.event("auto", on=SETTINGS.auto_mode, style=SETTINGS.auto_style)
 
     def set_motion_sync(self, on):
         with self._lock:
@@ -1426,10 +1731,15 @@ class Controller:
             SETTINGS.pan_near  = SETTINGS.pan_dead  + 0.15
             SETTINGS.tilt_near = SETTINGS.tilt_dead + 0.15
 
+            if changed:
+                DIAG.event("settings", changed={k: getattr(SETTINGS, k) for k in changed
+                                                 if k not in _DIAG_PRIVATE})
             if "motion_sync" in changed:
                 self.set_motion_sync(SETTINGS.motion_sync)
             if "zoom_enabled" in changed:
                 self.set_autozoom(SETTINGS.zoom_enabled)
+            if "auto_mode" in changed and self.tracker:
+                self.tracker._reset_filters()
             if any(k.startswith("anchor_") for k in changed):
                 PROFILE_MANAGER.sync_anchor()
             if self._stream_url() != before_url:
@@ -1614,6 +1924,9 @@ class Controller:
             "camera_ip":     SETTINGS.camera_ip,
             "home_preset":   SETTINGS.home_preset,
             "anchor":        self.anchor_view(tracking),
+            "auto":          {"enabled": bool(SETTINGS.auto_mode), "style": SETTINGS.auto_style,
+                              **(self.tracker.pilot.view() if (self.tracker and tracking
+                                                               and SETTINGS.auto_mode) else {})},
             "profile":       PROFILE_MANAGER.current,
             "profiles":      PROFILE_MANAGER.list_profiles(),
             "values":        {k: spec[2]() for k, spec in self.ADJUSTABLE.items()},
@@ -1680,6 +1993,13 @@ class Controller:
             self.set_autozoom(self._want(body, SETTINGS.zoom_enabled))
             self.schedule_save()
             return ok()
+
+        if name == "auto":
+            if "style" in body:
+                SETTINGS.auto_style = SETTINGS_SCHEMA["auto_style"](body["style"])
+            self.set_auto(self._want(body, SETTINGS.auto_mode))
+            self.schedule_save()
+            return ok(auto=SETTINGS.auto_mode, style=SETTINGS.auto_style)
 
         if name == "motion-sync":
             self.set_motion_sync(self._want(body, SETTINGS.motion_sync))

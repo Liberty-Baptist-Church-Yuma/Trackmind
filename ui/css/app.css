@@ -692,6 +692,11 @@ body.first-run .signal { opacity: 0; pointer-events: none; }
 /* Lite glass: skip refraction everywhere */
 html.lite [data-glass] { backdrop-filter: var(--frost-fallback) !important; -webkit-backdrop-filter: var(--frost-fallback) !important; }
 
+/* Auto mode owns the manual speed controls while it's on */
+.auto-only { display: none; }
+body[data-auto="true"] .auto-only { display: block; }
+body[data-auto="true"] .manual-only { opacity: 0.4; pointer-events: none; filter: saturate(0.4); transition: opacity 0.3s var(--ease); }
+
 /* ── Small windows ─────────────────────────────────────────── */
 
 @media (max-width: 1180px) {

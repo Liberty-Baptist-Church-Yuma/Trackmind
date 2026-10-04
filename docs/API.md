@@ -51,6 +51,9 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
   "anchor": { "enabled": true, "learned": true, "preset": 5, "mode": "recall",
               "range": 4, "hold": 0.25, "state": "held", "offset": null,
               "learning": false, "error": null },
+  "auto": { "enabled": true, "style": "balanced", "situation": "walking",
+            "learned": true, "gain_pan": 0.042, "gain_tilt": 0.031,
+            "latency": 0.46, "fit_r2": 0.95, "soften": 1.0 },
   "profile": "Sunday AM",
   "profiles": ["Sunday AM", "Wednesday", "Choir"],
   "values": {
@@ -81,6 +84,7 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
 | `camera_ip` | string | Camera IP from Trackmind's settings. |
 | `home_preset` | int | Preset used by `home` and by lost-subject recovery. |
 | `anchor` | object | Pulpit anchor for the active profile. `state` is `"off"` (disabled or not tracking), `"free"` (tracking normally), `"snapping"` (recalling the preset or gliding to the pulpit) or `"held"` (holding the pulpit shot). `offset` is how far the camera is from the learned pulpit, in Snap-range steps (`null` when unknown or while holding). `learned` is `false` until **Learn pulpit** has been run for this profile. `mode` is `"recall"` or `"glide"`. `range` (Snap range, compare with `offset`) and `hold` (hold-zone half-width, fraction of the frame) are the profile's settings. `learning`/`error` report the Learn pulpit run. |
+| `auto` | object | Auto mode. `enabled` and `style` (`"calm"`, `"balanced"`, `"responsive"`) are always present. While tracking with Auto on it also reports `situation` (`"still"`, `"walking"`, `"fast"`), whether the camera model is `learned` yet, the learned `gain_pan`/`gain_tilt` (frame widths per second per VISCA speed step), `latency` (seconds from command to video), `fit_r2` (how well the model fits, 0–1) and `soften` (1 = normal, lower = the hunting guard has eased off). |
 | `profile` | string \| null | Last loaded profile. |
 | `profiles` | string[] | Names of all saved profiles. |
 | `values` | object | Live values you can change with [`adjust`](#post-apiadjust). |
@@ -113,11 +117,12 @@ Every command is a `POST` with a JSON object body (use `{}` when there are no pa
 | `502` | Camera didn't accept the VISCA command |
 | `503` | Trackmind's UI thread was busy for >3 s (rare; retry) |
 
-### Toggles: `tracking`, `lock`, `autozoom`, `motion-sync`, `anchor`
+### Toggles: `tracking`, `lock`, `auto`, `autozoom`, `motion-sync`, `anchor`
 
 ```http
 POST /api/tracking      {"state": "toggle"}
 POST /api/lock          {"state": "on"}
+POST /api/auto          {"state": "on", "style": "calm"}
 POST /api/autozoom      {"state": "off"}
 POST /api/motion-sync   {"state": "toggle"}
 POST /api/anchor        {"state": "toggle"}
@@ -132,6 +137,7 @@ These commands work exactly like the buttons in Trackmind's main window:
 - Turning **tracking** off also releases the lock and stops the camera.
 - **tracking** returns `409` until the video stream is live.
 - **lock** `"on"` returns `409` while tracking is off. **lock** `"off"` always succeeds.
+- **auto** turns Auto mode on or off for the active settings. The optional `style` (`"calm"`, `"balanced"`, `"responsive"`) changes how lively it is. Both are saved.
 - **autozoom** and **motion-sync** are saved to Trackmind's settings. Motion Sync is pushed to the camera immediately.
 - **anchor** turns the pulpit anchor on or off and saves that into the active profile. `"on"` returns `409` if the pulpit hasn't been learned for this profile yet (that's done in the app's Settings → Pulpit).
 
