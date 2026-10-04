@@ -27,6 +27,11 @@ export const icons = {
 		`<circle cx="11" cy="11" r="4" fill="none" stroke="${accent}" stroke-width="2"/>` +
 		stroke("M14 14l3 3", accent, 2.3),
 
+	/** Auto mode — the app's i-sparkle: a big spark (ink) and a small one (accent). */
+	auto: (ink, accent) =>
+		`<path d="M11 3l1.9 5.6L18.5 10.5l-5.6 1.9L11 18l-1.9-5.6L3.5 10.5l5.6-1.9z" fill="none" stroke="${ink}" stroke-width="2" stroke-linejoin="round"/>` +
+		`<path d="M18.5 14.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="${accent}"/>`,
+
 	motionSync: (ink, accent) =>
 		stroke("M3 7h11M3 12h11M3 17h11", ink) +
 		stroke("M12 4.5L14.5 7 12 9.5M12 9.5l2.5 2.5-2.5 2.5M12 14.5l2.5 2.5-2.5 2.5", ink) +

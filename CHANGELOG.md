@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.3 — 2026-10-04
+
+### Stream Deck
+- **New Auto Mode key** (plugin v1.2.0). It toggles Auto mode on or off, can set a style (Calm, Balanced or Responsive) on every press, and shows what Auto is doing: Steady, Following, Catching up, or Learning. A green corner light shows while it's active, amber while it's learning or has eased off. Needs Trackmind v1.8.2 or newer.
+
 ## v1.8.2 — 2026-09-30
 
 ### Auto mode

@@ -24,6 +24,18 @@ export type Anchor = {
 	error: string | null;
 };
 
+/** Auto mode — see Controller.status / AutoPilot.view in autotrack.py. */
+export type Auto = {
+	enabled: boolean;
+	style: "calm" | "balanced" | "responsive";
+	/** The rest is only present while tracking with Auto on. */
+	situation?: "still" | "walking" | "fast";
+	learned?: boolean;
+	gain_pan?: number;
+	latency?: number;
+	soften?: number;
+};
+
 /** GET /api/status — see App.api_status in autotrack.py. */
 export type TrackmindStatus = {
 	ok: boolean;
@@ -43,6 +55,8 @@ export type TrackmindStatus = {
 	home_preset: number;
 	/** Missing on Trackmind older than v1.8. */
 	anchor?: Anchor;
+	/** Missing on Trackmind older than v1.8.2. */
+	auto?: Auto;
 	profile: string | null;
 	profiles: string[];
 	values: Values;

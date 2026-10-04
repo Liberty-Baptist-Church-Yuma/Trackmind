@@ -29,7 +29,7 @@
 		</section>
 
 		<!-- ═══ Toggle actions ═══ -->
-		<section class="glass card" data-glass data-for="tracking lock autozoom motionsync anchor">
+		<section class="glass card" data-glass data-for="tracking lock auto autozoom motionsync anchor">
 			<h2 class="eyebrow">Key behaviour</h2>
 			<div class="seg" data-setting="mode" data-default="toggle" role="radiogroup">
 				<button data-value="toggle">Toggle</button>
@@ -38,9 +38,22 @@
 			</div>
 			<p class="hint" data-hint-for="tracking">Toggle flips tracking each press. Use <b>Always on / off</b> in multi-actions so a press always lands in a known state.</p>
 			<p class="hint" data-hint-for="lock">Lock ignores everyone except the person Trackmind is following. Only works while tracking is on.</p>
+			<p class="hint" data-hint-for="auto">Auto mode picks speed, dead zones and smoothing to suit what the speaker is doing, and learns how the camera moves. The key shows what it's doing: Steady, Following, Catching up, or Learning.</p>
 			<p class="hint" data-hint-for="autozoom">Keeps the subject filling the frame. Tune target fill and speed with the dial or in Trackmind.</p>
 			<p class="hint" data-hint-for="anchor">Turns the pulpit anchor on or off for the active profile. Learn the pulpit first in Trackmind → Settings → Pulpit. The key glows while the shot is held.</p>
 			<p class="hint" data-hint-for="motionsync">PTZOptics Motion Sync makes pan, tilt and zoom arrive at a preset together — smoother recalls on air.</p>
+		</section>
+
+		<!-- ═══ Auto style ═══ -->
+		<section class="glass card" data-glass data-for="auto">
+			<h2 class="eyebrow">Style</h2>
+			<div class="seg" data-setting="style" data-default="keep" role="radiogroup">
+				<button data-value="keep">Keep</button>
+				<button data-value="calm">Calm</button>
+				<button data-value="balanced">Balanced</button>
+				<button data-value="responsive">Responsive</button>
+			</div>
+			<p class="hint"><b>Keep</b> leaves Trackmind's style alone. Pick a style to set it on every press, e.g. a <b>Calm</b> key for the sermon and a <b>Responsive</b> one for a walking speaker.</p>
 		</section>
 
 		<!-- ═══ Preset ═══ -->

@@ -73,6 +73,32 @@ export class LockAction extends ToggleAction {
 	}
 }
 
+type AutoSettings = ToggleSettings & { style?: "keep" | "calm" | "balanced" | "responsive" };
+
+const AUTO_SITUATION = { still: "Steady", walking: "Following", fast: "Catching up" } as const;
+
+@action({ UUID: "com.coder747.trackmind.auto" })
+export class AutoAction extends TrackmindAction<AutoSettings> {
+	override async onKeyDown(ev: KeyDownEvent<AutoSettings>): Promise<void> {
+		const { mode, style } = ev.payload.settings;
+		const body: Record<string, string> = { state: mode ?? "toggle" };
+		if (style && style !== "keep") body.style = style;
+		await this.run(ev.action, "auto", body);
+	}
+
+	protected view(_: AutoSettings, s: TrackmindStatus | null): View {
+		const base = { tone: "green", icon: "auto", label: "Auto" } as const;
+		const a = s?.auto;
+		if (s && !a) return { key: { ...base, active: false, sub: "Update Trackmind", subInk: "warn" } };
+		if (!a?.enabled) return { key: { ...base, active: false, sub: "Off" } };
+		if (!s?.tracking) return { key: { ...base, active: true, sub: "On · paused", subInk: "dim" } };
+		if (!a.learned) return { key: { ...base, active: true, sub: "Learning", subInk: "warn", corner: "amber" } };
+		const sit = a.situation ? AUTO_SITUATION[a.situation] : "On";
+		const eased = (a.soften ?? 1) < 0.9;
+		return { key: { ...base, active: true, sub: sit, corner: eased ? "amber" : "green" } };
+	}
+}
+
 @action({ UUID: "com.coder747.trackmind.autozoom" })
 export class AutoZoomAction extends ToggleAction {
 	protected readonly command = "autozoom";

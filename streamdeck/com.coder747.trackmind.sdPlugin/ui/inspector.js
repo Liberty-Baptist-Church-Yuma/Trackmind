@@ -12,6 +12,7 @@
 	const ACTIONS = {
 		tracking: { name: "Tracking", accent: "green" },
 		lock: { name: "Lock Subject", accent: "amber" },
+		auto: { name: "Auto Mode", accent: "green" },
 		autozoom: { name: "Auto-Zoom", accent: "blue" },
 		motionsync: { name: "Motion Sync", accent: "blue" },
 		anchor: { name: "Pulpit Anchor", accent: "amber" },

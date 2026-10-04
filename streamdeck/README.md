@@ -20,6 +20,7 @@ Every key is a full-bleed pane of real liquid glass. The plugin renders each key
 | **Lock Subject** | Lock onto the current subject | Locked / off / "needs tracking" |
 | **Recall Preset** | Recall preset *N*. Optionally pauses tracking so the shot holds | Preset number and your label. Glows red while on air |
 | **Home Preset** | Recall Trackmind's home preset | Home preset number |
+| **Auto Mode** | Toggle / on / off Auto mode, optionally setting its style (Calm / Balanced / Responsive) on each press | Off / On, paused / Learning / Steady / Following / Catching up. Green corner light while active, amber while learning or eased off |
 | **Auto-Zoom** | Toggle / on / off | On, off, zooming in / out |
 | **Pan / Tilt (Hold)** | Moves while held, in 8 directions at speed 1–24. Tracking pauses and resumes on release | Direction and speed |
 | **Zoom (Hold)** | Zooms in / out while held, at speed 0–7 | Direction and speed |
@@ -37,7 +38,7 @@ Multi-actions are supported. A good pattern for services is a **"Sermon"** multi
 
 ## Requirements
 
-- **Trackmind v1.7 or newer**, running on the same PC as the Stream Deck software (the Pulpit Anchor key needs v1.8 or newer)
+- **Trackmind v1.7 or newer**, running on the same PC as the Stream Deck software (the Pulpit Anchor key needs v1.8 or newer, the Auto Mode key v1.8.2 or newer)
 - **Stream Deck software 7.1 or newer** (Windows 10+ or macOS 12+)
 - Any Stream Deck model. The Tracking Dial needs a Stream Deck +.
 

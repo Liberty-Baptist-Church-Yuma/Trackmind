@@ -57,6 +57,7 @@ const listIcon = (fn, size) => `<svg xmlns="http://www.w3.org/2000/svg" width="$
 const actions = {
 	tracking: { icon: "tracking", key: { tone: "green", active: false, icon: "tracking", label: "Tracking", sub: "Off" } },
 	lock: { icon: "lock", key: { tone: "amber", active: false, icon: "unlock", label: "Lock", sub: "Off" } },
+	auto: { icon: "auto", key: { tone: "green", active: false, icon: "auto", label: "Auto", sub: "Off" } },
 	autozoom: { icon: "autozoom", key: { tone: "blue", active: false, icon: "autozoom", label: "Auto-Zoom", sub: "Off" } },
 	anchor: { icon: "pulpit", key: { tone: "amber", active: false, icon: "pulpit", label: "Pulpit", sub: "Off" } },
 	motionsync: { icon: "motionSync", key: { tone: "blue", active: false, icon: "motionSync", label: "Motion Sync", sub: "Off" } },
@@ -86,6 +87,7 @@ if (i > 0) {
 		{ tone: "green", active: false, icon: "tracking", label: "Tracking", sub: "Off" },
 		{ tone: "amber", active: true, icon: "lock", label: "Locked", sub: "On subject" },
 		{ tone: "amber", active: false, icon: "unlock", label: "Lock", sub: "Off" },
+		{ tone: "green", active: true, icon: "auto", label: "Auto", sub: "Following", corner: "green" },
 		{ tone: "blue", active: true, icon: "autozoom", label: "Auto-Zoom", sub: "On" },
 		{ tone: "red", active: true, glyph: "4", label: "Pulpit", sub: "On air" },
 		{ tone: "red", active: false, glyph: "12", label: "Choir Loft", sub: "Preset 12" },
