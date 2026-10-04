@@ -972,6 +972,7 @@ class AutoTracker:
         s = SETTINGS
         self.pilot         = AutoPilot(s.auto_gain_pan, s.auto_gain_tilt, s.auto_latency)
         self._pilot_fits   = 0
+        self._pending_reset = None   # "full" / "filters", set from other threads
         self._last_cmd_t   = 0.0
         self._last_cx      = None
         self._last_cy      = None
@@ -1118,8 +1119,25 @@ class AutoTracker:
             self._tilt_cmd = self._slew(self._tilt_cmd, 0.0, dt)
         self._send_move(now)
 
+    def request_reset(self, full=True):
+        """
+        Reset from another thread (UI / API). The tracker thread may be midway
+        through a frame, and the pilot's buffers can't be cleared under it,
+        so the reset is applied at the start of the next frame instead.
+        """
+        if full or self._pending_reset is None:
+            self._pending_reset = "full" if full else "filters"
+
+    def _apply_pending_reset(self):
+        pending, self._pending_reset = self._pending_reset, None
+        if pending == "full":
+            self.reset()
+        elif pending == "filters":
+            self._reset_filters()
+
     def observe_ego(self, now, bx, by, conf):
         """Camera's own motion measured from the video (auto mode only)."""
+        self._apply_pending_reset()
         if self._prev_zoom != 0:
             conf = 0.0          # zooming scales the picture; not a pan/tilt shift
         self.pilot.on_ego(now, bx, by, conf)
@@ -1130,6 +1148,7 @@ class AutoTracker:
             SETTINGS.auto_latency = round(m.latency, 3)
 
     def process(self, detection):
+        self._apply_pending_reset()
         now = time.monotonic()
         if detection is None:
             if (self._last_seen is not None and not self._at_home
@@ -1329,6 +1348,24 @@ class TrackerThread(threading.Thread):
     def stop(self):
         self._stop_event.set()
 
+    def _track_frame(self, frame, frame_t, rgb, detector, tracker, ego):
+        tracker.fps = self.fps
+        if SETTINGS.auto_mode:
+            m = ego.update(frame, frame_t)
+            if m:
+                tracker.observe_ego(frame_t, *m)
+        else:
+            ego.reset()
+        detection = detector.detect(rgb, hard_lock=self.app.lock_active)
+        was_home  = tracker._at_home
+        tracker.process(detection)
+        if tracker._at_home and not was_home:
+            # The home preset reframes everything, so the lock's last
+            # position means nothing now. Without this the lock waited
+            # forever for someone to reappear at the old spot.
+            detector.release_lock()
+        return detection
+
     def _position_poller(self, visca, tracker):
         """Keeps tracker.cam_pos fresh while a learned pulpit anchor is armed."""
         while not self._stop_event.wait(0.25):
@@ -1394,6 +1431,7 @@ class TrackerThread(threading.Thread):
         self.running = True
         self.status  = "PAUSED"
         frame_count  = 0
+        errors       = 0
 
         # Start the dedicated buffer-draining reader thread
         buf_stop = threading.Event()
@@ -1448,22 +1486,23 @@ class TrackerThread(threading.Thread):
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             if self.tracking:
-                hard_lock = self.app.lock_active
-                tracker.fps = self.fps
-                if SETTINGS.auto_mode:
-                    m = ego.update(frame, frame_t)
-                    if m:
-                        tracker.observe_ego(frame_t, *m)
-                else:
-                    ego.reset()
-                detection = detector.detect(rgb, hard_lock=hard_lock)
-                was_home  = tracker._at_home
-                tracker.process(detection)
-                if tracker._at_home and not was_home:
-                    # The home preset reframes everything, so the lock's last
-                    # position means nothing now. Without this the lock waited
-                    # forever for someone to reappear at the old spot.
-                    detector.release_lock()
+                try:
+                    detection = self._track_frame(frame, frame_t, rgb, detector, tracker, ego)
+                except Exception as e:
+                    # One bad frame must not end tracking for the rest of the
+                    # service: stop the camera, log it, and carry on.
+                    detection = None
+                    errors += 1
+                    if errors <= 3 or errors % 100 == 0:
+                        import traceback
+                        print(f"[TRACKER] Frame failed ({errors}): {e}")
+                        traceback.print_exc()
+                    DIAG.event("error", throttle=5.0, where="frame", msg=f"{type(e).__name__}: {e}")
+                    try:
+                        visca.stop()
+                        tracker.request_reset()
+                    except Exception:
+                        pass
                 self.latest_detection = detection
                 self.status = "TRACKING"
             else:
@@ -1668,7 +1707,7 @@ class Controller:
             DIAG.event("session", ev="on" if on else "off",
                        settings=_diag_settings() if on else None)
             if on:
-                if self.tracker: self.tracker.reset()
+                if self.tracker: self.tracker.request_reset()
             else:
                 if self.visca: self.visca.stop(); self.visca.zoom_stop()
                 self.lock_active = False
@@ -1697,7 +1736,7 @@ class Controller:
             if SETTINGS.auto_mode != bool(on):
                 SETTINGS.auto_mode = bool(on)
                 if self.tracker:
-                    self.tracker._reset_filters()
+                    self.tracker.request_reset(full=False)
                 DIAG.event("auto", on=SETTINGS.auto_mode, style=SETTINGS.auto_style)
 
     def set_motion_sync(self, on):
@@ -1739,7 +1778,7 @@ class Controller:
             if "zoom_enabled" in changed:
                 self.set_autozoom(SETTINGS.zoom_enabled)
             if "auto_mode" in changed and self.tracker:
-                self.tracker._reset_filters()
+                self.tracker.request_reset(full=False)
             if any(k.startswith("anchor_") for k in changed):
                 PROFILE_MANAGER.sync_anchor()
             if self._stream_url() != before_url:

@@ -317,3 +317,16 @@ def test_ego_motion_measures_a_known_shift():
     bx, by, conf = ego.update(frame(-32), 1.1)      # 32 px left in 0.1 s
     assert bx == pytest.approx(-32 / 1280 / 0.1, rel=0.05)
     assert abs(by) < 0.02 and conf > 0.5
+
+
+def test_reset_from_another_thread_is_deferred_to_the_next_frame(settings, clock, visca):
+    settings.auto_mode = True
+    tr = autotrack.AutoTracker(visca)
+    for _ in range(10):
+        clock.advance(0.04); tr.process((0.6, 0.5, 0.2, 0.4))
+    assert len(tr.pilot.axes[0].hist) > 0
+    tr.request_reset()                       # e.g. Tracking pressed in the UI
+    assert len(tr.pilot.axes[0].hist) > 0    # nothing touched yet
+    clock.advance(0.04); tr.process((0.6, 0.5, 0.2, 0.4))
+    assert len(tr.pilot.axes[0].hist) == 1   # reset ran, then this frame was added
+    assert tr._pending_reset is None

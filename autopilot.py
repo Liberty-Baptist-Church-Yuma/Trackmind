@@ -63,7 +63,7 @@ class EgoMotion:
             self._win = cv2.createHanningWindow(self.SIZE, cv2.CV_32F)
         prev, pt = self._prev, self._t
         self._prev, self._t = g, t
-        if prev is None or t <= pt or t - pt > 0.5:
+        if prev is None or t <= pt or t - pt > 0.5 or prev.shape != g.shape:
             return None
         (dx, dy), conf = cv2.phaseCorrelate(prev, g, self._win)
         dt = t - pt
