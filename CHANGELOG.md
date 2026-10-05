@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.8.4 — 2026-10-04
+
+### Frame rate
+- **About 40% less GPU work per frame.** A 16:9 camera picture only filled 640×360 of the model's 640×640 input; the rest was grey padding the GPU processed every frame. The model now takes 640×384 (`models/rtmo-s-u8-640x384.onnx`, same network and weights, only the size-dependent constants trimmed). Checked against the 640×640 model on test photos: the same people found, keypoints within 1% of the frame. On CPU ONNX Runtime it takes 63% of the time; the GPU gain should be similar, so the RTX 2060 running vMix should get much closer to the camera's 30 fps.
+- **Tracking no longer stalls behind the pulpit position check.** With the pulpit anchor set, Trackmind asks the camera where it's pointing four times a second. While it waited for the answer (up to 0.3 s) it held the camera connection, so any pan/tilt command the tracker sent meanwhile — and the whole tracking loop — waited too. Now only the send itself is exclusive.
+
+### Auto zoom
+- **Zoom is part of Auto mode.** With Auto and Auto-zoom both on, Trackmind zooms the way it pans: it frames the speaker first and zooms in only once they've settled, centred, with the camera still; it stops zooming in if they start walking; it zooms out promptly when they're too big and goes a little wider while they move fast.
+- **Eases in, no overshoot.** Zoom speed is proportional to how far off the size is, so it slows as it nears the target, and it stops early by what the video delay will still add. **Zoom speed** is the top speed in Auto mode (3–5 works well).
+- **Learns your camera's zoom rate**, remembers it, and notices the end of the zoom range instead of asking for more.
+- **Steadier size reading (Auto and manual zoom).** The speaker's size now comes from the torso (shoulders to hips). The old reading shrank by a third the moment knees or hips left a tight shot, which made zoom keep zooming in. The zoom target means the same as before.
+
 ## v1.8.3 — 2026-10-04
 
 ### Pulpit anchor

@@ -23,10 +23,11 @@ import zipfile
 
 import numpy as np
 
-MODEL_FILE = "rtmo-s-u8.onnx"      # RTMO-s with a uint8 NHWC input (see make_uint8_input)
+MODEL_FILE = "rtmo-s-u8-640x384.onnx"   # RTMO-s, uint8 NHWC 640×384 input (see make_uint8_input)
+LEGACY_MODEL_FILES = ("rtmo-s-u8.onnx",)  # the 640×640 build shipped in v1.8.3
 MODEL_URL = ("https://download.openmmlab.com/mmpose/v1/projects/rtmo/onnx_sdk/"
              "rtmo-s_8xb32-600e_body7-640x640-dac2bf74_20231211.zip")
-INPUT = 640
+INPUT = (384, 640)           # model input (height, width)
 DET_THRESHOLD = 0.30         # person score to keep
 DUP_IOU = 0.55               # boxes overlapping this much are the same person...
 DUP_CENTER = 0.04            # ...or torso centres this close (frame fraction)
@@ -41,39 +42,94 @@ COCO_TO_MP = {0: 0, 1: 2, 2: 5, 3: 7, 4: 8, 5: 11, 6: 12, 7: 13, 8: 14,
 # ─────────────────────────────────────────────────────────────
 
 def model_search_paths():
-    paths = []
+    dirs = []
     if getattr(sys, "frozen", False):
-        paths.append(os.path.join(sys._MEIPASS, "models", MODEL_FILE))
-    here = os.path.dirname(os.path.abspath(__file__))
-    paths.append(os.path.join(here, "models", MODEL_FILE))
-    paths.append(os.path.join(os.path.expanduser("~/.trackmind"), "models", MODEL_FILE))
-    return paths
+        dirs.append(os.path.join(sys._MEIPASS, "models"))
+    dirs.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"))
+    dirs.append(os.path.join(os.path.expanduser("~/.trackmind"), "models"))
+    return [os.path.join(d, f) for f in (MODEL_FILE, *LEGACY_MODEL_FILES) for d in dirs]
 
 
 def find_model():
     return next((p for p in model_search_paths() if os.path.isfile(p)), None)
 
 
-def make_uint8_input(src_path, dst_path):
+def make_uint8_input(src_path, dst_path, height=INPUT[0], width=INPUT[1]):
     """
     Give the model a uint8 NHWC input — exactly what OpenCV produces — with
     the float conversion and NHWC→NCHW transpose done inside the graph, on
     the GPU. Uploading uint8 is 4× less data than float32; on an RTX 2060
     this cut inference from ~41 ms to ~24 ms and CPU prep from ~8 ms to ~1 ms.
+
+    Also shrinks the input from the published 640×640 to height×width (see
+    resize_input). Accepts the original float model or an earlier uint8 build.
     Build-time only (needs the `onnx` package).
     """
     import onnx
     from onnx import TensorProto, helper
     m = onnx.load(src_path)
     g = m.graph
-    old = g.input[0].name
-    g.input.remove(g.input[0])
-    g.input.insert(0, helper.make_tensor_value_info("image", TensorProto.UINT8, [1, INPUT, INPUT, 3]))
-    for node in reversed([helper.make_node("Cast", ["image"], ["image_f"], to=TensorProto.FLOAT),
-                          helper.make_node("Transpose", ["image_f"], [old], perm=[0, 3, 1, 2])]):
-        g.node.insert(0, node)
+    if g.input[0].type.tensor_type.elem_type != TensorProto.UINT8:
+        old = g.input[0].name
+        g.input.remove(g.input[0])
+        g.input.insert(0, helper.make_tensor_value_info("image", TensorProto.UINT8, [1, 640, 640, 3]))
+        for node in reversed([helper.make_node("Cast", ["image"], ["image_f"], to=TensorProto.FLOAT),
+                              helper.make_node("Transpose", ["image_f"], [old], perm=[0, 3, 1, 2])]):
+            g.node.insert(0, node)
+    resize_input(m, height, width)
     onnx.checker.check_model(m)
     onnx.save(m, dst_path)
+
+
+# The published model is fixed at 640×640. Only three constants depend on the
+# input size, all laid out row-major over the feature grids:
+#   pos_enc  (1, 400, 256)       stride-32 grid (20×20), the encoder's sine positions
+#   priors   (2000, 2) / (1, 2000, k)   stride-16 (40×40) then stride-32 (20×20) cells
+# Keeping the cells of the top-left height×width part of those grids gives a
+# model for that input size with identical weights. A 16:9 camera frame fills
+# only 640×360 of a 640×640 square, so 640×384 does ~40% less work for the
+# same detections (checked against the square model on COCO photos: same
+# people, keypoints within 0.01 of the frame).
+_GRID16, _GRID32 = 40, 20
+
+
+def resize_input(model, height, width):
+    """Rebuild the size-dependent constants of a 640×640 RTMO graph for height×width input."""
+    from onnx import numpy_helper
+    if height % 32 or width % 32 or not (0 < height <= 640 and 0 < width <= 640):
+        raise ValueError("input size must be multiples of 32, at most 640")
+    g = model.graph
+    dims = g.input[0].type.tensor_type.shape.dim
+    dims[1].dim_value, dims[2].dim_value = height, width
+    cells = lambda n, stride, h, w: (np.arange(h // stride)[:, None] * n + np.arange(w // stride)[None]).ravel()
+    pos = cells(_GRID32, 32, height, width)
+    prior = np.concatenate([cells(_GRID16, 16, height, width),
+                            _GRID16 ** 2 + cells(_GRID32, 32, height, width)])
+    n_pos, n_prior = _GRID32 ** 2, _GRID16 ** 2 + _GRID32 ** 2
+
+    def fix(t):
+        a = numpy_helper.to_array(t)
+        if a.ndim == 3 and a.shape[:2] == (1, n_pos) and a.dtype == np.float32:
+            a = a[:, pos]
+        elif a.ndim == 2 and a.shape == (n_prior, 2):
+            a = a[prior]
+        elif a.ndim == 3 and a.shape[:2] == (1, n_prior):
+            a = a[:, prior]
+        else:
+            return 0
+        t.CopyFrom(numpy_helper.from_array(np.ascontiguousarray(a), t.name))
+        return 1
+
+    found = sum(fix(t) for t in g.initializer)
+    for node in g.node:
+        if node.op_type == "Constant":
+            for at in node.attribute:
+                if at.name == "value":
+                    at.t.name = at.t.name or node.output[0]
+                    found += fix(at.t)
+    if found != 4:
+        raise RuntimeError(f"expected 4 size-dependent constants in the RTMO graph, found {found}")
+    del g.value_info[:]          # stale 640×640 shapes; re-inferred on load
 
 
 def fetch_model(dest_dir, url=MODEL_URL, quiet=False):
@@ -168,15 +224,19 @@ def best_gpu():
 
 def letterbox(frame_bgr, size=INPUT, canvas=None):
     """
-    RTMO input: aspect-preserving resize into a size×size BGR canvas padded
-    with 114, as uint8 NHWC (1, size, size, 3). Pass `canvas` to reuse a buffer.
+    RTMO input: aspect-preserving resize into a size = (height, width) BGR
+    canvas padded with 114, as uint8 NHWC (1, height, width, 3). Pass
+    `canvas` to reuse a buffer.
     """
     import cv2
+    if isinstance(size, int):
+        size = (size, size)
+    H, W = size
     h, w = frame_bgr.shape[:2]
-    r = min(size / h, size / w)
-    nh, nw = int(round(h * r)), int(round(w * r))
-    if canvas is None or canvas.shape != (size, size, 3):
-        canvas = np.full((size, size, 3), 114, np.uint8)
+    r = min(H / h, W / w)
+    nh, nw = min(H, int(round(h * r))), min(W, int(round(w * r)))
+    if canvas is None or canvas.shape != (H, W, 3):
+        canvas = np.full((H, W, 3), 114, np.uint8)
     else:
         canvas[nh:, :] = 114
         canvas[:nh, nw:] = 114
@@ -275,15 +335,16 @@ class GpuPose:
         if inp.type != "tensor(uint8)":
             raise RuntimeError(f"{os.path.basename(model_path)} isn't the uint8 build of the model")
         self.input = inp.name
+        self.size = tuple(int(d) for d in inp.shape[1:3])   # (height, width)
         self.ms = None                          # inference time, EMA
-        self._canvas = np.full((INPUT, INPUT, 3), 114, np.uint8)
+        self._canvas = np.full((*self.size, 3), 114, np.uint8)
         # Warm-up: DirectML compiles shaders on the first runs
         for _ in range(2):
             self.session.run(None, {self.input: self._canvas[None]})
 
     def infer(self, frame_bgr):
         h, w = frame_bgr.shape[:2]
-        x, ratio = letterbox(frame_bgr, canvas=self._canvas)
+        x, ratio = letterbox(frame_bgr, self.size, canvas=self._canvas)
         t = time.perf_counter()
         dets, kps = self.session.run(None, {self.input: x})
         ms = (time.perf_counter() - t) * 1000
@@ -293,9 +354,13 @@ class GpuPose:
 
 if __name__ == "__main__":
     # python pose_gpu.py fetch   → download the model next to this file
+    # python pose_gpu.py convert SRC → build models/MODEL_FILE from a 640×640 model
     # python pose_gpu.py gpus    → list GPUs DirectML can use
     if len(sys.argv) > 1 and sys.argv[1] == "fetch":
         fetch_model(os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"))
+    elif len(sys.argv) > 2 and sys.argv[1] == "convert":
+        make_uint8_input(sys.argv[2], os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                   "models", MODEL_FILE))
     else:
         for g in list_gpus():
             print(f"device {g[0]}: {g[1]} ({g[2] / 2**30:.1f} GB)")

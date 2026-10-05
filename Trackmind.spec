@@ -38,10 +38,10 @@ try:
     hiddenimports += ['pose_gpu']
 except Exception as e:
     print(f"WARNING: onnxruntime not bundled ({e}); the exe will be CPU-only")
-if os.path.isfile('models/rtmo-s-u8.onnx'):
-    datas += [('models/rtmo-s-u8.onnx', 'models'), ('models/LICENSE-RTMO.txt', 'models')]
+if os.path.isfile('models/rtmo-s-u8-640x384.onnx'):
+    datas += [('models/rtmo-s-u8-640x384.onnx', 'models'), ('models/LICENSE-RTMO.txt', 'models')]
 else:
-    print("WARNING: models/rtmo-s-u8.onnx missing; the exe will be CPU-only")
+    print("WARNING: models/rtmo-s-u8-640x384.onnx missing; the exe will be CPU-only")
 
 # pywebview + its WebView2 interop DLLs (Microsoft.Web.WebView2.*.dll, pythonnet)
 tmp_ret = collect_all('webview')
