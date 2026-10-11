@@ -85,9 +85,11 @@ class Run:
 
 
 def simulate(autotrack, clock, visca, script, cam=Camera(), seconds=20.0, seed=0,
-             tracker=None, start_x=0.0):
+             tracker=None, start_x=0.0, hidden=None):
     """
     script(t) -> subject angle in degrees (relative to the camera's start).
+    hidden(t) -> True while the subject goes undetected (turned away, half out
+    of frame) even though they're in the picture.
     Returns a Run. Pass `tracker` to continue a run with a warmed-up tracker.
     """
     rnd = random.Random(seed)
@@ -127,7 +129,8 @@ def simulate(autotrack, clock, visca, script, cam=Camera(), seconds=20.0, seed=0
                     if autotrack.SETTINGS.auto_mode:
                         tracker.observe_ego(clock.t, b, 0.0, 0.9)
                 prev_frame = (t, ca)
-                visible = 0.0 <= x_seen <= 1.0 and rnd.random() >= cam.miss_rate
+                visible = (0.0 <= x_seen <= 1.0 and rnd.random() >= cam.miss_rate
+                           and not (hidden and hidden(seen_t)))
                 det = ((x_seen + rnd.gauss(0, cam.pose_noise), 0.5, 0.15, 0.4)
                        if visible else None)
                 tracker.process(det)
@@ -182,3 +185,8 @@ def still_with_sway(sway=0.25, seed=1):
 
 def fast_exit(speed=8.0, start=2.0, dur=1.5):
     return lambda t: 0.0 if t < start else min(dur, t - start) * speed
+
+
+def quick_exit(speed=6.3, start=2.0, dur=1.8):
+    """Steps off quickly to one side (~0.4 frame widths/s on a medium shot) and stops."""
+    return lambda t: 0.0 if t < start else -min(dur, t - start) * speed

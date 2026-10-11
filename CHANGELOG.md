@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Fixes from the 2026-10-11 Sunday service, where a speaker who stepped off quickly was let half out of the picture, the camera then whip-panned past him, and the lock took a seated person instead.
+
+### Auto mode
+- **Adapts to the measured video delay.** Auto already measured the delay between a command and seeing it on video (about 0.65 s on the sanctuary camera). It now also uses it to set how hard to follow: the longer the delay, the harder the camera accelerates and closes the gap on a moving speaker (up to 2× the response tuned for 0.4 s).
+- **Catches up before the speaker reaches the edge.** The edge check uses where the speaker will be once the delay has played out, not where the delayed picture shows them. In simulation with the sanctuary camera's delay, a speaker stepping off at about 0.4 frame widths per second used to leave the picture; now they stay in it.
+- **No whip-pans from a bad speed reading.** The speaker's estimated speed is capped at a believable pace, and held to walking pace for half a second after they're found again. A few jumpy frames at the edge of the picture once read 2.4 frame widths per second and panned the camera at speed 16.
+- **The profile's Fast pan/tilt speeds are a hard limit in Auto mode** too.
+
+### Lock-on
+- **A different-sized person can't take the lock.** While the subject has been unseen for less than 2 s, anyone smaller than 70% or larger than about 140% of them is ignored, so the lock holds instead of switching to someone seated nearby. After 2 s (the camera has gone home and the shot may have changed) anyone can be picked up as before. Rejections are recorded in the diagnostics log with the size ratio.
+
 ## v1.8.3 — 2026-10-04
 
 ### Pulpit anchor
