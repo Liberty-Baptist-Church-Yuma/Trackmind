@@ -227,6 +227,8 @@
 						<button data-value="responsive">Responsive</button>
 					</div>
 				</div>
+				<div class="row"><span>Adapt to video delay <small class="hint">follows harder when the camera's video arrives late, and catches up before the speaker reaches the edge</small></span>
+					<input type="checkbox" class="switch" data-setting="auto_delay_adapt" /></div>
 				<div class="row"><span>Auto status <small class="hint" id="autoStatus">Off</small></span></div>
 			</div>
 			<div class="card" data-tone="green">
@@ -236,8 +238,10 @@
 					<div class="slider-row"><input class="slider" type="range" min="0" max="10" step="1" data-setting="motion_smooth" /><output class="value num"></output></div></div>
 				<div class="row"><span>Motion Sync <small class="hint">pan, tilt & zoom reach presets together</small></span>
 					<input type="checkbox" class="switch" data-setting="motion_sync" /></div>
+				<div class="row"><span>Lock size check <small class="hint">while the locked speaker is out of sight, ignore anyone much smaller or larger</small></span>
+					<input type="checkbox" class="switch" data-setting="lock_size_check" /></div>
 			</div>
-			<p class="hint pad auto-only">Auto mode is choosing the speeds, dead zones and smoothing below. Turn Auto off to set them by hand.</p>
+			<p class="hint pad auto-only">Auto mode is choosing the speeds, dead zones and smoothing below. It never goes faster than Pan · fast and Tilt · fast. Turn Auto off to set them by hand.</p>
 			<h3 class="eyebrow sub">Speed</h3>
 			<div class="card manual-only" data-tone="green">
 				<div class="row"><span>Pan · slow</span><div class="stepper" data-setting="pan_slow" data-min="1" data-max="24"><button data-step="-1">−</button><input type="number" /><button data-step="1">+</button></div></div>

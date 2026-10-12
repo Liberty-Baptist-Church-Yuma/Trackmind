@@ -12,7 +12,7 @@ import pytest
 import autopilot
 import autotrack
 from autopilot import AutoPilot, LoopModel, _Axis
-from camsim import Camera, fast_exit, pacing, simulate, still_with_sway, walk_then_stop
+from camsim import Camera, fast_exit, pacing, quick_exit, simulate, still_with_sway, walk_then_stop
 
 
 # ── Loop model ─────────────────────────────────────────────────
@@ -102,6 +102,26 @@ def test_velocity_of_walking_subject_while_camera_follows():
         a.on_ego(t, -0.25, True)
         a.observe(t, 0.5)
     assert a.w == pytest.approx(0.25, abs=0.03)
+
+
+def test_velocity_is_held_to_walking_pace_right_after_a_reset():
+    """
+    Field, 2026-10-11: re-found at the edge of the picture, a few jumpy frames
+    read 2.4 frame widths/s and the camera whip-panned past the speaker.
+    """
+    a = _Axis(0)
+    for i, x in enumerate((0.05, 0.07, 0.15, 0.25, 0.32)):
+        a.on_ego(i / 15, 0.0, True); a.observe(i / 15, x)
+    assert abs(a.w) <= autopilot.W_FRESH
+
+
+def test_velocity_is_capped_at_a_believable_pace():
+    a = _Axis(0)
+    t = 0.0
+    for i in range(30):
+        t += 1 / 15
+        a.on_ego(t, 0.0, True); a.observe(t, 0.1 + 0.2 * i)   # 3 frame widths/s
+    assert abs(a.w) <= autopilot.W_MAX
 
 
 def test_ego_loss_restarts_velocity_fit():
@@ -224,6 +244,65 @@ def test_auto_walk_then_stop_no_bounce_and_centres(settings, clock, fov):
     big_back = [p for p in moves if p > 1]   # walking right needs pan < 0
     assert not big_back, "camera swung back after the speaker stopped"
     assert r.max_error(9, 12) < 0.2
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_auto_keeps_a_quick_walker_in_frame_with_long_video_delay(settings, clock, seed):
+    """
+    Field, 2026-10-11: ~0.65 s of measured delay, a speaker stepping off
+    quickly at ~0.4 frame widths/s got half out of the picture before the
+    camera caught up. With the delay learned, the camera has to catch up on
+    where they will be, harder the longer the delay.
+    """
+    _configure(settings, "auto")
+    settings.pan_fast = settings.tilt_fast = 10
+    cam = Camera(fov=17, video_latency=0.45, miss_rate=0.03)
+    tr, v = _warm(cam, clock, seed=seed)
+    assert tr.pilot.model.latency > 0.55
+    r = simulate(autotrack, clock, v, quick_exit(), cam, seconds=9, seed=seed, tracker=tr)
+    assert r.lost_frames() == 0
+    assert min(x for t, x in zip(r.t, r.x) if t >= 2.0) > 0.0
+
+
+def test_auto_never_exceeds_the_profile_fast_speed(settings, clock):
+    _configure(settings, "auto")
+    settings.pan_fast = settings.tilt_fast = 6
+    cam = Camera(fov=10, video_latency=0.4)
+    tr, v = _warm(cam, clock)
+    simulate(autotrack, clock, v, fast_exit(speed=12.0), cam, seconds=8, seed=3, tracker=tr)
+    assert max(abs(p) for p, _ in v.moves) <= 6
+
+
+def test_longer_delay_follows_harder():
+    """Same subject, same error: the pilot that measured more delay accelerates harder."""
+    out = {}
+    for lat in (0.3, 0.7):
+        p = AutoPilot(gain_pan=0.05, latency=lat)
+        p.situation = "walking"
+        a = p.axes[0]
+        a.w = -0.3
+        p._axis(a, 0.3, lat, 0.1, autopilot.STYLES["balanced"], 10.0)
+        out[lat] = a.b_cmd
+    assert out[0.7] > out[0.3] > 0
+
+
+def test_delay_adaptation_can_be_turned_off():
+    out = {}
+    for lat in (0.3, 0.7):
+        p = AutoPilot(gain_pan=0.05, latency=lat)
+        p.situation = "walking"
+        a = p.axes[0]
+        a.w = -0.3
+        p._axis(a, 0.3, lat, 0.1, autopilot.STYLES["balanced"], 10.0, adapt=False)
+        out[lat] = a.b_cmd
+    assert out[0.7] == pytest.approx(out[0.3])
+
+
+def test_new_tracking_settings_are_per_profile_and_validate():
+    d = autotrack.Settings().to_dict()
+    assert d["auto_delay_adapt"] is True and d["lock_size_check"] is True
+    assert autotrack.SETTINGS_SCHEMA["auto_delay_adapt"]("off") is False
+    assert autotrack.SETTINGS_SCHEMA["lock_size_check"]("on") is True
 
 
 def _score(settings, clock, mode, seeds=(21, 22)):

@@ -177,10 +177,13 @@ It needs a camera that answers the VISCA pan/tilt position inquiry. PTZOptics ca
 |---|---|---|
 | Auto mode | Off | Trackmind picks speed, dead zones and smoothing to suit the situation, and learns how your camera moves. While it's on, the manual speed, dead-zone and smoothing settings below are greyed out. Saved per profile. |
 | Auto style | Balanced | **Calm** moves less and more gently, **Responsive** follows more tightly. |
+| Adapt to video delay | On | Auto follows a moving speaker harder the longer the camera's measured video delay (up to 2× at 0.8 s), and starts catching up on where the speaker will be once the delay plays out, so a quick walker isn't let out of the picture. Auto never goes faster than **Pan / Tilt · fast**. Saved per profile. |
 | Auto status | | What Auto is doing, and what it has learned: how far one speed step moves the picture, and the video delay. |
 | Vertical aim | 2 | −7 = top of head, 0 = centered, +7 = feet |
 | Motion smoothing | 5 | How gently the camera eases into and out of moves. 0 = instant, 10 = silkiest (slightly slower to react). |
 | Motion Sync | Off | PTZOptics Motion Sync: pan, tilt and zoom reach a recalled preset at the same moment. It's pushed to the camera on connect and saved per profile. |
+| Lock size check | On | While the locked speaker is out of sight (for up to 2 s), anyone smaller than 70% or larger than about 140% of them is ignored, so the lock waits instead of switching to someone seated nearby. After 2 s anyone can be picked up again. Saved per profile. |
+| Pan / Tilt · fast in Auto mode | | Auto mode uses these as its top speed. |
 | Pan / Tilt · slow, fast | 2 / 5 | Speed range (1–24). Speed glides smoothly between slow (just off center) and fast (at the frame edge). |
 | Dead zones · pan, tilt | 0.17 | Fraction of the frame the subject can drift before the camera follows. Higher is steadier. |
 

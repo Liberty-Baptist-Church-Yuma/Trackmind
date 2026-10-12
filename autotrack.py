@@ -99,12 +99,20 @@ class Settings:
         # next start; they belong to the camera, not to a profile.
         self.auto_mode      = False
         self.auto_style     = "balanced"   # calm | balanced | responsive
+        # Follow harder the longer the measured video delay, and catch up on
+        # where the speaker will be rather than where the delayed picture
+        # shows them. Per profile, on by default.
+        self.auto_delay_adapt = True
         self.auto_gain_pan  = 0.10
         self.auto_gain_tilt = 0.10
         self.auto_latency   = 0.35
 
         self.track_focus  = 'upper'
         self.track_offset = 2
+
+        # Lock: ignore anyone much smaller or larger than the locked subject
+        # while they've been unseen for under 2 s. Per profile.
+        self.lock_size_check = True
 
         # Pulpit anchor: when the camera settles near a fixed spot (the pulpit),
         # snap to that spot's preset and hold the shot until the speaker walks
@@ -176,6 +184,8 @@ class Settings:
             "track_offset": self.track_offset,
             "auto_mode":      self.auto_mode,
             "auto_style":     self.auto_style,
+            "auto_delay_adapt": self.auto_delay_adapt,
+            "lock_size_check":  self.lock_size_check,
             "auto_gain_pan":  self.auto_gain_pan,
             "auto_gain_tilt": self.auto_gain_tilt,
             "auto_latency":   self.auto_latency,
@@ -230,6 +240,7 @@ class Settings:
             "latency_comp": self.latency_comp, "lost_timeout": self.lost_timeout,
             "track_offset": self.track_offset,
             "auto_mode": self.auto_mode, "auto_style": self.auto_style,
+            "auto_delay_adapt": self.auto_delay_adapt, "lock_size_check": self.lock_size_check,
             "anchor_enabled": self.anchor_enabled, "anchor_preset": self.anchor_preset,
             "anchor_range": self.anchor_range, "anchor_dwell": self.anchor_dwell,
             "anchor_hold": self.anchor_hold, "anchor_hold_top": self.anchor_hold_top,
@@ -754,6 +765,8 @@ class PersonDetector:
 
     FOLLOW_STICK  = 0.15   # unlocked (GPU): keep following whoever is this close to the last spot
     SIZE_WEIGHT   = 0.15   # locked (GPU): how much a size mismatch counts against a candidate
+    SIZE_GATE     = 0.70   # locked: anyone smaller than this ratio of the subject (or larger than 1/it) is someone else
+    SIZE_GATE_FOR = 2.0    # s unseen during which the size gate holds (after that the shot may have changed)
 
     def __init__(self, diag=None, engine=None, gpu_factory=None):
         self.diag        = diag or NULL_DIAG
@@ -797,6 +810,18 @@ class PersonDetector:
         self.engine.update(engine="cpu", device="CPU · MediaPipe", ms=None,
                            error=f"GPU failed, switched to CPU: {err}")
         self._ensure_cpu()
+
+    def _size_ok(self, h, unseen):
+        """
+        Locked: is a candidate of height h plausibly the subject? A seated
+        person in the front row was once taken for a speaker who had walked
+        out of the picture: 40% smaller and lower in the frame, but nearest
+        to where the search was looking.
+        """
+        lh = self._locked_h
+        if not SETTINGS.lock_size_check or not lh or h is None or unseen >= self.SIZE_GATE_FOR:
+            return True
+        return self.SIZE_GATE <= h / lh <= 1.0 / self.SIZE_GATE
 
     def _lock_update(self, cx, cy, now, h=None):
         dt = now - self._lock_seen
@@ -942,10 +967,13 @@ class PersonDetector:
         px = min(1.0, max(0.0, self._locked_cx + self._lock_vx * ahead))
         py = min(1.0, max(0.0, self._locked_cy + self._lock_vy * ahead))
         radius = min(self.LOCK_MAX_DIST, self.LOCK_DIST + self.LOCK_GROW * unseen)
-        inside = [c for c in cands if dist(c[0], px, py) < radius]
+        near   = [c for c in cands if dist(c[0], px, py) < radius]
+        inside = [c for c in near if self._size_ok(c[0][3], unseen)]
         if not inside:
             self.diag.event("lock", throttle=0.5, ev="reject", people=len(cands), radius=radius,
-                            dist=min(dist(c[0], px, py) for c in cands))
+                            dist=min(dist(c[0], px, py) for c in cands),
+                            size=(round(near[0][0][3] / self._locked_h, 2)
+                                  if near and self._locked_h else None))
             return None
         lh = self._locked_h or 0.0
 
@@ -968,7 +996,7 @@ class PersonDetector:
                 print(f"[LOCK] Acquired at ({bbox[0]:.2f}, {bbox[1]:.2f})")
                 self.diag.event("lock", ev="acquired", cx=bbox[0], cy=bbox[1])
             # Unlocked — follow whoever MediaPipe sees, update position freely
-            self._lock_update(bbox[0], bbox[1], now)
+            self._lock_update(bbox[0], bbox[1], now, bbox[3])
             return bbox
 
         # Locked: search where the subject is heading, not where they were
@@ -986,13 +1014,14 @@ class PersonDetector:
             return None
         cx, cy = bbox[0], bbox[1]
         dist = math.hypot(cx - px, cy - py)
-        if dist < radius:
+        if dist < radius and self._size_ok(bbox[3], unseen):
             if unseen > 0.5:
                 print(f"[LOCK] Reacquired after {unseen:.1f}s at ({cx:.2f}, {cy:.2f})")
                 self.diag.event("lock", ev="reacquired", unseen=unseen, cx=cx, cy=cy)
-            self._lock_update(cx, cy, now)
+            self._lock_update(cx, cy, now, bbox[3])
             return bbox
-        self.diag.event("lock", throttle=0.5, ev="reject", dist=dist, radius=radius)
+        self.diag.event("lock", throttle=0.5, ev="reject", dist=dist, radius=radius,
+                        size=round(bbox[3] / self._locked_h, 2) if self._locked_h else None)
         return None
 
     def _detect_in(self, pose, frame_rgb, x_lo, x_hi):
@@ -1309,7 +1338,9 @@ class AutoTracker:
 
         if s.auto_mode:
             self._last_seen = self._last_motion_t = now
-            self._pan_cmd, self._tilt_cmd = self.pilot.step(now, cx, cy, bbox_h, s.auto_style)
+            self._pan_cmd, self._tilt_cmd = self.pilot.step(now, cx, cy, bbox_h, s.auto_style,
+                                                            (s.pan_fast, s.tilt_fast),
+                                                            adapt=s.auto_delay_adapt)
             self._vx = self.pilot.axes[0].w      # the anchor's "settled" check reads this
             self._send_move(now)
             self._sample((raw_cx, raw_cy, cx, cy, bbox_h, cx), now)
@@ -1710,6 +1741,8 @@ SETTINGS_SCHEMA = {
     "latency_comp":  _clamp_float(0.0, 2.0),
     "lost_timeout":  _clamp_float(1.0, 10.0, 1),
     "auto_mode":     _as_bool,
+    "auto_delay_adapt": _as_bool,
+    "lock_size_check":  _as_bool,
     "pose_engine":   lambda v: str(v).strip().lower() if str(v).strip().lower() in ("auto", "gpu", "cpu") else "auto",
     "auto_style":    lambda v: str(v).strip().lower() if str(v).strip().lower() in AUTO_STYLES else "balanced",
     "anchor_enabled": _as_bool,
@@ -2104,7 +2137,9 @@ class Controller:
             "camera_ip":     SETTINGS.camera_ip,
             "home_preset":   SETTINGS.home_preset,
             "anchor":        self.anchor_view(tracking),
+            "lock_size_check": bool(SETTINGS.lock_size_check),
             "auto":          {"enabled": bool(SETTINGS.auto_mode), "style": SETTINGS.auto_style,
+                              "delay_adapt": bool(SETTINGS.auto_delay_adapt),
                               **(self.tracker.pilot.view() if (self.tracker and tracking
                                                                and SETTINGS.auto_mode) else {})},
             "profile":       PROFILE_MANAGER.current,

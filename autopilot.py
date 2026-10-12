@@ -225,6 +225,9 @@ BRAKE                  = 2.5           # braking may be this much harder than ac
 EDGE                   = 0.32          # |error| past this: catch up at "fast" limits...
 EDGE_ACCEL             = 1.5           # ...accelerating up to this hard
 CATCH_UP, CATCH_UP_REL  = 0.03, 0.20    # max gap-closing speed while following
+LAT_REF, LAT_SCALE_MAX = 0.40, 2.0     # delay the limits were tuned at; most they scale up for more
+W_MAX                  = 0.75          # fastest believable subject, frame widths / s
+W_FRESH, FRESH_SPAN    = 0.35, 0.5     # until VEL fit spans FRESH_SPAN s after a reset, |w| <= W_FRESH
 REVERSE_HOLD           = 2.0           # s after a move during which...
 REVERSE_DEAD           = 0.20          # ...reversing needs this much error
 STEP_HOLD              = 0.8           # VISCA steps of change needed to switch step
@@ -241,6 +244,7 @@ class _Axis:
         self.ego_E  = 0.0     # accumulated background displacement
         self.ego_t  = None
         self.hist   = deque() # (t, x - ego_E): the subject in camera-independent terms
+        self.first_t = None   # first observation since the last reset
         self.w      = 0.0     # subject's own velocity, picture units / s
         self.b_ego  = 0.0     # latest background velocity (for diagnostics)
         self.last_side   = 0
@@ -268,7 +272,15 @@ class _Axis:
         fit over the last VEL_WINDOW s gives its velocity with no lag mismatch
         between subject and camera motion (which made the earlier estimate
         overshoot every time the camera sped up or slowed down).
+
+        The result is capped at a believable pace, and held to walking pace
+        for the first half second after a reset: a fit over a few frames of a
+        subject just re-found at the edge of the picture (half the body cut
+        off, filters restarting) once read 2.4 frame widths/s and whip-panned
+        the camera at speed 16 past the speaker.
         """
+        if self.first_t is None:
+            self.first_t = t
         self.hist.append((t, x - self.ego_E))
         while self.hist and self.hist[0][0] < t - self.VEL_WINDOW:
             self.hist.popleft()
@@ -280,7 +292,8 @@ class _Axis:
         num = sum((h[0] - mt) * (h[1] - ms) for h in self.hist)
         den = sum((h[0] - mt) ** 2 for h in self.hist)
         if den > 0:
-            self.w = 0.5 * self.w + 0.5 * (num / den)
+            lim = W_FRESH if t - self.first_t < FRESH_SPAN else W_MAX
+            self.w = max(-lim, min(lim, 0.5 * self.w + 0.5 * (num / den)))
 
 
 class AutoPilot:
@@ -337,8 +350,13 @@ class AutoPilot:
 
     # ── Control ───────────────────────────────────────────────
 
-    def step(self, now, cx, cy, h, style="balanced"):
-        """One detection. Returns (pan, tilt) VISCA speeds (pan + = left)."""
+    def step(self, now, cx, cy, h, style="balanced", max_step=(24, 24), adapt=True):
+        """
+        One detection. Returns (pan, tilt) VISCA speeds (pan + = left), never
+        faster than max_step (the profile's Fast speeds) per axis. adapt=False
+        turns off following harder for a longer measured delay and the
+        predicted-position edge check (Settings → "Adapt to video delay").
+        """
         dt = min(0.25, max(1e-3, now - self._last_t)) if self._last_t else None
         self._last_t = now
         st = STYLES.get(style, STYLES["balanced"])
@@ -355,7 +373,8 @@ class AutoPilot:
             return self.output()
 
         L = min(0.9, max(0.08, self.model.latency))
-        return tuple(self._axis(a, x, L, dt, st, now) for a, x in zip(self.axes, (cx, cy)))
+        return tuple(self._axis(a, x, L, dt, st, now, m, adapt)
+                     for a, x, m in zip(self.axes, (cx, cy), max_step))
 
     def coast(self, now):
         """No detection this frame: ease the camera off."""
@@ -384,11 +403,16 @@ class AutoPilot:
         p["k"] *= self.soften; p["accel"] *= self.soften
         return p
 
-    def _axis(self, a, x, L, dt, style, now):
+    def _axis(self, a, x, L, dt, style, now, max_step=24, adapt=True):
         p = self._params(a, style)
         lead = min(1.0, abs(a.w) / WALK_ENTER)            # no lead for jitter
         x_pred = x + a.w * L * lead + self.model.commanded_shift(now, a.axis, L)
         e = x_pred - 0.5
+        # The longer the measured video delay, the further behind the picture
+        # the camera is, so a moving subject is followed with proportionally
+        # harder acceleration and catch-up (1x at LAT_REF, up to LAT_SCALE_MAX).
+        lat = min(LAT_SCALE_MAX, max(1.0, L / LAT_REF)) if adapt else 1.0
+        edge_k = 1.0 if a.axis == 0 else TILT_SCALE["dead"]
         side = (e > 0) - (e < 0)
 
         # Swinging back the other way right after a move needs a much bigger
@@ -407,28 +431,40 @@ class AutoPilot:
             a.last_side, a.last_side_t = a.active, now
 
         vmax, accel = p["vmax"], p["accel"]
-        if abs(x - 0.5) > EDGE:
+        if self.situation != "still":
+            accel *= lat
+        # Edge check on where the subject will be once the delay has played
+        # out, not where the delayed picture shows them: with ~0.65 s of delay,
+        # by the time the picture showed a fast walker near the edge they were
+        # already half out of it.
+        if max(abs(x - 0.5), abs(e) if adapt else 0.0) > EDGE * edge_k:
             # About to lose them off the edge: catch up at "fast" limits
             f = SITUATIONS["fast"]
             tilt = TILT_SCALE["vmax"] if a.axis else 1.0
             vmax  = max(vmax,  f["vmax"] * style["speed"] * tilt)
-            accel = max(accel, EDGE_ACCEL * style["speed"] * tilt)
+            accel = max(accel, EDGE_ACCEL * style["speed"] * tilt * lat)
         fb = -p["k"] * e if a.active else 0.0
         if self.situation != "still":
             # Close the gap gently on top of matching the subject's pace.
             # Unlimited catch-up ran the camera at twice a walker's speed and
             # carried it past them when they stopped.
-            catch = CATCH_UP + CATCH_UP_REL * abs(a.w)
+            catch = (CATCH_UP + CATCH_UP_REL * abs(a.w)) * lat
             fb = max(-catch, min(catch, fb))
         ff = -p["ff"] * a.w if self.situation != "still" else 0.0
         if a.w * e < 0:
             # Camera is already ahead of the subject: let them catch up
             ff *= max(0.0, 1.0 - abs(e) / max(1e-6, p["dead"]))
+        g = self.model.gain[a.axis]
+        if g > 0:
+            vmax = min(vmax, max_step * g)               # the profile's Fast speed is a hard limit
         b_des = max(-vmax, min(vmax, fb + ff))
 
         braking = abs(b_des) < abs(a.b_cmd) or b_des * a.b_cmd < 0
         a.b_cmd = _approach(a.b_cmd, b_des, accel * (BRAKE if braking else 1.0) * dt)
-        return float(self._quantize(a))
+        q = self._quantize(a)
+        if abs(q) > max_step:
+            a.q = q = max_step if q > 0 else -max_step
+        return float(q)
 
     def _quantize(self, a):
         """

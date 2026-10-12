@@ -146,6 +146,46 @@ def test_lock_rejects_others_when_subject_leaves(gpu, clock):
     assert step(d, clock, lock=True) is None
 
 
+def test_lock_rejects_a_smaller_person_after_losing_the_subject(gpu, clock):
+    """
+    Field, 2026-10-11: the speaker went out of the picture and the lock took
+    a seated person (40% smaller, lower in frame) who was nearest to where
+    it was searching. Hold rather than switch to someone else.
+    """
+    d = PersonDetector(engine="gpu", gpu_factory=lambda: gpu)
+    gpu.people = [(0.5, 0.55, 0.65, 0.9)]
+    for _ in range(5):
+        step(d, clock, lock=True)
+    gpu.people = []
+    for _ in range(20):                              # 0.8 s unseen
+        step(d, clock, lock=True)
+    gpu.people = [(0.6, 0.8, 0.40, 0.95)]            # someone seated nearby
+    for _ in range(10):
+        assert step(d, clock, lock=True) is None
+    gpu.people = [(0.6, 0.8, 0.40, 0.95), (0.8, 0.55, 0.62, 0.9)]   # speaker back
+    assert step(d, clock, lock=True)[0] == pytest.approx(0.8, abs=0.02)
+
+
+def test_lock_size_check_can_be_turned_off(gpu, clock, settings):
+    settings.lock_size_check = False
+    d = PersonDetector(engine="gpu", gpu_factory=lambda: gpu)
+    gpu.people = [(0.5, 0.55, 0.65, 0.9)]
+    step(d, clock, lock=True)
+    gpu.people = [(0.55, 0.6, 0.40, 0.95)]
+    assert step(d, clock, lock=True) is not None
+
+
+def test_lock_size_gate_gives_way_after_a_long_absence(gpu, clock):
+    d = PersonDetector(engine="gpu", gpu_factory=lambda: gpu)
+    gpu.people = [(0.5, 0.55, 0.65, 0.9)]
+    step(d, clock, lock=True)
+    gpu.people = []
+    for _ in range(60):                              # 2.4 s: the camera has gone home
+        step(d, clock, lock=True)
+    gpu.people = [(0.5, 0.55, 0.35, 0.9)]            # wider shot, subject smaller
+    assert step(d, clock, lock=True) is not None
+
+
 def test_lock_reacquires_after_fast_exit(gpu, clock):
     d = PersonDetector(engine="gpu", gpu_factory=lambda: gpu)
     x, y = 0.5, 0.55
