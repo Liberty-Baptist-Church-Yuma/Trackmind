@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Release Trackmind — bump version.txt (and the Stream Deck plugin version if it changed), write the CHANGELOG entry, update docs, commit as the owner with no co-author, tag vX.Y.Z, and watch the Windows build until the Release is published. Use for "commit and push", "version shift", "push/build", "release", "bump".
+description: Release Trackmind — bump version.txt (and the Stream Deck plugin version if it changed), write the CHANGELOG entry, update docs, commit as LBCYuma2017 with no co-author, tag vX.Y.Z, and watch the Windows build until the Release is published. Use for "commit and push", "version shift", "push/build", "release", "bump".
 argument-hint: "[version | patch | minor]"
 ---
 
@@ -23,7 +23,9 @@ argument-hint: "[version | patch | minor]"
 
 - Commit **all** outstanding changes unless the owner held something back.
 - Use one descriptive subject ending in `; bump to v<new>` (repo style), and a body explaining the why.
-- **No `Co-Authored-By` and no `Claude-Session` trailer.** Commit as the repo's configured user (`coder747-8i`).
+- **No `Co-Authored-By` and no `Claude-Session` trailer.** That's the point of the rule. Commit as **LBCYuma2017**
+  (`git -c user.name=LBCYuma2017 -c user.email=ryanmangum@me.com commit …` if git has no identity set). The old
+  `coder747-8i` account owned the repo before it moved to the org.
 
 ## 4. Push, tag, watch. Ask first.
 

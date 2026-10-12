@@ -11,7 +11,10 @@ Auto camera tracking for church services: a Python app (pose detection → VISCA
 - **New features get Stream Deck support** (a key, or a setting on an existing key) unless it makes no sense.
   Say so when you skip it.
 - **New behaviour that changes how tracking acts is toggleable** in Settings.
-- **Commits are by the owner only.** Never add `Co-Authored-By` or `Claude-Session` lines.
+- **No co-author lines.** Never add `Co-Authored-By` or `Claude-Session` trailers; commits carry only the
+  owner's name. Commit as **LBCYuma2017** (the church's GitHub account; the repo now lives in the
+  Liberty-Baptist-Church-Yuma org). Older commits by `coder747-8i` are from before the move, when that account
+  owned the repo.
 - Ask before pushing. A pushed `v*` tag builds and publishes a Release.
 
 ## Versions and releases
