@@ -116,10 +116,15 @@ class Settings:
         self.anchor_range   = 4      # 1..10 — how near the camera must settle
         self.anchor_dwell   = 1.0    # s the camera must sit still before snapping
         self.anchor_hold    = 0.25   # half-width of the hold zone (frame fraction)
+        self.anchor_hold_top = 0.50  # hold zone height, from the top of the frame
         self.anchor_mode    = "recall"   # "recall" the preset, or "glide" there slowly
         self.anchor_glide   = 6      # glide pan/tilt speed, 1..24
         self.anchor_pan     = None
         self.anchor_tilt    = None
+
+        # Pose engine: "auto" = GPU (RTMO via DirectML, pose_gpu.py) when one
+        # is usable, else CPU (MediaPipe); "gpu" / "cpu" force one. App-wide.
+        self.pose_engine    = "auto"
 
         # Local control API (used by the Stream Deck plugin). App-wide, not
         # per-profile — loading a profile never changes these.
@@ -174,11 +179,13 @@ class Settings:
             "auto_gain_pan":  self.auto_gain_pan,
             "auto_gain_tilt": self.auto_gain_tilt,
             "auto_latency":   self.auto_latency,
+            "pose_engine":    self.pose_engine,
             "anchor_enabled": self.anchor_enabled,
             "anchor_preset":  self.anchor_preset,
             "anchor_range":   self.anchor_range,
             "anchor_dwell":   self.anchor_dwell,
             "anchor_hold":    self.anchor_hold,
+            "anchor_hold_top": self.anchor_hold_top,
             "anchor_mode":    self.anchor_mode,
             "anchor_glide":   self.anchor_glide,
             "anchor_pan":     self.anchor_pan,
@@ -225,7 +232,7 @@ class Settings:
             "auto_mode": self.auto_mode, "auto_style": self.auto_style,
             "anchor_enabled": self.anchor_enabled, "anchor_preset": self.anchor_preset,
             "anchor_range": self.anchor_range, "anchor_dwell": self.anchor_dwell,
-            "anchor_hold": self.anchor_hold,
+            "anchor_hold": self.anchor_hold, "anchor_hold_top": self.anchor_hold_top,
             "anchor_mode": self.anchor_mode, "anchor_glide": self.anchor_glide,
             "anchor_pan": self.anchor_pan, "anchor_tilt": self.anchor_tilt,
         }
@@ -278,7 +285,8 @@ class ProfileManager:
         return True
 
     ANCHOR_KEYS = ("anchor_enabled", "anchor_preset", "anchor_range", "anchor_dwell",
-                   "anchor_hold", "anchor_mode", "anchor_glide", "anchor_pan", "anchor_tilt")
+                   "anchor_hold", "anchor_hold_top", "anchor_mode", "anchor_glide",
+                   "anchor_pan", "anchor_tilt")
 
     def sync_anchor(self):
         """
@@ -744,21 +752,53 @@ class PersonDetector:
     LOCK_CROP     = 0.32   # min half-width of the region searched while locked
     LOCK_PREDICT  = 1.0    # s — max time the subject's last velocity is extrapolated
 
-    def __init__(self, diag=None):
-        self.mp_pose     = mp.solutions.pose
-        self.pose        = self._make_pose()
-        # Locked mode runs on a crop around the subject. A separate instance
-        # keeps MediaPipe's frame-to-frame tracking state consistent with the
-        # crop, instead of mixing crops and full frames in one tracker.
-        self.pose_locked = self._make_pose()
+    FOLLOW_STICK  = 0.15   # unlocked (GPU): keep following whoever is this close to the last spot
+    SIZE_WEIGHT   = 0.15   # locked (GPU): how much a size mismatch counts against a candidate
+
+    def __init__(self, diag=None, engine=None, gpu_factory=None):
         self.diag        = diag or NULL_DIAG
+        self.pose = self.pose_locked = None       # MediaPipe, created when needed
+        self.gpu         = None
+        want = engine or SETTINGS.pose_engine
+        self.engine = {"engine": "cpu", "device": "CPU · MediaPipe", "ms": None,
+                       "requested": want, "error": None}
+        if want in ("auto", "gpu"):
+            try:
+                self.gpu = (gpu_factory or _make_gpu_pose)()
+                self.engine.update(engine="gpu", device=f"GPU · {self.gpu.device_name}")
+                print(f"[POSE] Using the GPU: {self.gpu.device_name} (RTMO, DirectML)")
+            except Exception as e:
+                self.engine["error"] = f"GPU unavailable: {e}"
+                print(f"[POSE] GPU unavailable ({e}) — using MediaPipe on the CPU")
+                self.diag.event("engine", ev="gpu_unavailable", error=str(e)[:300])
+        if self.gpu is None:
+            self._ensure_cpu()
         self._locked_cx  = None
         self._locked_cy  = None
+        self._locked_h   = None
         self._lock_seen  = 0.0
         self._lock_vx    = 0.0    # subject velocity in frame fractions / s,
         self._lock_vy    = 0.0    # so a fast exit is searched where it went
 
-    def _lock_update(self, cx, cy, now):
+    def _ensure_cpu(self):
+        if self.pose is None:
+            self.mp_pose     = mp.solutions.pose
+            self.pose        = self._make_pose()
+            # Locked mode runs on a crop around the subject. A separate instance
+            # keeps MediaPipe's frame-to-frame tracking state consistent with the
+            # crop, instead of mixing crops and full frames in one tracker.
+            self.pose_locked = self._make_pose()
+
+    def _gpu_failed(self, err):
+        """The GPU stopped working mid-service (driver reset, device lost): carry on on the CPU."""
+        print(f"[POSE] GPU inference failed ({err}) — switching to the CPU")
+        self.diag.event("engine", ev="gpu_failed", error=str(err)[:300])
+        self.gpu = None
+        self.engine.update(engine="cpu", device="CPU · MediaPipe", ms=None,
+                           error=f"GPU failed, switched to CPU: {err}")
+        self._ensure_cpu()
+
+    def _lock_update(self, cx, cy, now, h=None):
         dt = now - self._lock_seen
         if self._locked_cx is not None and 0.0 < dt < 0.5:
             a = 0.3
@@ -767,6 +807,8 @@ class PersonDetector:
         elif self._locked_cx is None:
             self._lock_vx = self._lock_vy = 0.0
         self._locked_cx, self._locked_cy, self._lock_seen = cx, cy, now
+        if h is not None:
+            self._locked_h = h if self._locked_h is None else 0.8 * self._locked_h + 0.2 * h
 
     def _make_pose(self):
         return self.mp_pose.Pose(
@@ -832,11 +874,15 @@ class PersonDetector:
 
         return cx, cy, x1 - x0, y1 - y0
 
-    def detect(self, frame_rgb, hard_lock=False):
+    def detect(self, frame_rgb=None, hard_lock=False, frame_bgr=None):
         """
         hard_lock=False (default): follows most prominent person,
                                    updates lock position each frame freely.
         hard_lock=True:  strictly ignores anyone too far from locked position.
+
+        Pass the frame as RGB or BGR (BGR avoids a conversion on the GPU path).
+        On the GPU every person in the frame is detected and _choose picks
+        one; the MediaPipe (CPU) path below sees only one person per image.
 
         MediaPipe Pose only ever returns ONE person — whoever it judges most
         prominent. So a lock can't just filter full-frame results: once a
@@ -846,6 +892,74 @@ class PersonDetector:
         image the model sees.
         """
         now = time.monotonic()
+        if self.gpu is not None:
+            bgr = frame_bgr if frame_bgr is not None else cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            try:
+                people = self.gpu.infer(bgr)
+            except Exception as e:
+                self._gpu_failed(e)
+            else:
+                self.engine["ms"] = round(self.gpu.ms, 1) if self.gpu.ms else None
+                return self._choose(people, hard_lock, now)
+        if frame_rgb is None:
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        t0 = time.perf_counter()
+        bbox = self._detect_mediapipe(frame_rgb, hard_lock, now)
+        ms = (time.perf_counter() - t0) * 1000
+        self.engine["ms"] = round(ms if self.engine["ms"] is None else 0.9 * self.engine["ms"] + 0.1 * ms, 1)
+        return bbox
+
+    def _choose(self, people, hard_lock, now):
+        """Pick the subject among everyone the GPU model found."""
+        cands = []
+        for p in people:
+            b = self._landmarks_to_bbox(p["landmarks"])
+            if b is not None:
+                cands.append((b, p["score"]))
+        if not cands:
+            return None
+        dist = lambda b, x, y: math.hypot(b[0] - x, b[1] - y)
+
+        if not hard_lock or self._locked_cx is None:
+            pick = None
+            if self._locked_cx is not None and now - self._lock_seen < 1.0:
+                # Keep following the same person rather than hopping to
+                # whoever scores highest this frame.
+                near = min(cands, key=lambda c: dist(c[0], self._locked_cx, self._locked_cy))
+                if dist(near[0], self._locked_cx, self._locked_cy) < self.FOLLOW_STICK:
+                    pick = near
+            if pick is None:
+                pick = max(cands, key=lambda c: c[1] * c[0][3])   # confident × tall = prominent
+            bbox = pick[0]
+            if hard_lock:
+                print(f"[LOCK] Acquired at ({bbox[0]:.2f}, {bbox[1]:.2f})")
+                self.diag.event("lock", ev="acquired", cx=bbox[0], cy=bbox[1], people=len(cands))
+            self._lock_update(bbox[0], bbox[1], now, bbox[3])
+            return bbox
+
+        unseen = max(0.0, now - self._lock_seen)
+        ahead  = min(unseen, self.LOCK_PREDICT)
+        px = min(1.0, max(0.0, self._locked_cx + self._lock_vx * ahead))
+        py = min(1.0, max(0.0, self._locked_cy + self._lock_vy * ahead))
+        radius = min(self.LOCK_MAX_DIST, self.LOCK_DIST + self.LOCK_GROW * unseen)
+        inside = [c for c in cands if dist(c[0], px, py) < radius]
+        if not inside:
+            self.diag.event("lock", throttle=0.5, ev="reject", people=len(cands), radius=radius,
+                            dist=min(dist(c[0], px, py) for c in cands))
+            return None
+        lh = self._locked_h or 0.0
+
+        def cost(c):
+            size = abs(c[0][3] - lh) / lh if lh > 0 else 0.0
+            return dist(c[0], px, py) + self.SIZE_WEIGHT * size
+        bbox = min(inside, key=cost)[0]
+        if unseen > 0.5:
+            print(f"[LOCK] Reacquired after {unseen:.1f}s at ({bbox[0]:.2f}, {bbox[1]:.2f})")
+            self.diag.event("lock", ev="reacquired", unseen=unseen, cx=bbox[0], cy=bbox[1])
+        self._lock_update(bbox[0], bbox[1], now, bbox[3])
+        return bbox
+
+    def _detect_mediapipe(self, frame_rgb, hard_lock, now):
         if not hard_lock or self._locked_cx is None:
             bbox = self._detect_in(self.pose, frame_rgb, 0.0, 1.0)
             if bbox is None:
@@ -902,13 +1016,20 @@ class PersonDetector:
     def release_lock(self):
         self._locked_cx = None
         self._locked_cy = None
+        self._locked_h  = None
         self._lock_vx = self._lock_vy = 0.0
         self.diag.event("lock", ev="released")
         print("[LOCK] Released — will reacquire")
 
     def close(self):
-        self.pose.close()
-        self.pose_locked.close()
+        for p in (self.pose, self.pose_locked):
+            if p is not None:
+                p.close()
+
+
+def _make_gpu_pose():
+    from pose_gpu import GpuPose      # imported lazily: onnxruntime is optional
+    return GpuPose()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1006,8 +1127,11 @@ class AutoTracker:
             return None
         return max(abs(pos[0] - s.anchor_pan), abs(pos[1] - s.anchor_tilt)) / self.ANCHOR_UNITS
 
-    def _anchor(self, now, cx):
-        """Advance the pulpit-anchor state. True = hold the camera still this frame."""
+    def _anchor(self, now, cx, top=0.0):
+        """
+        Advance the pulpit-anchor state. True = hold the camera still this frame.
+        cx is the subject's aim point, top the top of their box (their head).
+        """
         s = SETTINGS
         if not s.anchor_enabled or s.anchor_pan is None:
             self.anchor_state = "free"
@@ -1027,7 +1151,11 @@ class AutoTracker:
             return True
 
         if self.anchor_state == "held":
-            if abs(cx - 0.5) <= s.anchor_hold:
+            # The hold zone is a box: anchor_hold either side of centre, and
+            # from the top of the frame down to anchor_hold_top. The head has
+            # to stay in it — leaning and gestures don't, walking down off the
+            # platform or sitting down does.
+            if abs(cx - 0.5) <= s.anchor_hold and top <= s.anchor_hold_top:
                 self._outside_since = None
                 return True
             self._outside_since = self._outside_since or now
@@ -1173,7 +1301,7 @@ class AutoTracker:
         cy     = self._f_cy(cy, fdt)
         bbox_h = self._f_h(bbox_h, fdt)
 
-        if self._anchor(now, cx):
+        if self._anchor(now, cx, cy - bbox_h / 2):
             # Holding the pulpit shot: the preset owns pan, tilt and zoom
             self._last_seen     = now
             self._last_motion_t = now
@@ -1348,7 +1476,7 @@ class TrackerThread(threading.Thread):
     def stop(self):
         self._stop_event.set()
 
-    def _track_frame(self, frame, frame_t, rgb, detector, tracker, ego):
+    def _track_frame(self, frame, frame_t, detector, tracker, ego):
         tracker.fps = self.fps
         if SETTINGS.auto_mode:
             m = ego.update(frame, frame_t)
@@ -1356,7 +1484,7 @@ class TrackerThread(threading.Thread):
                 tracker.observe_ego(frame_t, *m)
         else:
             ego.reset()
-        detection = detector.detect(rgb, hard_lock=self.app.lock_active)
+        detection = detector.detect(frame_bgr=frame, hard_lock=self.app.lock_active)
         was_home  = tracker._at_home
         tracker.process(detection)
         if tracker._at_home and not was_home:
@@ -1403,7 +1531,18 @@ class TrackerThread(threading.Thread):
 
         def open_rtsp():
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
-            c = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+            # Decode H.264 on the GPU (D3D11 video decoder) when available;
+            # falls back to software decoding if the driver/stream refuses.
+            try:
+                c = cv2.VideoCapture(url, cv2.CAP_FFMPEG,
+                                     [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY])
+                if not c.isOpened():
+                    raise RuntimeError("hardware decode unavailable")
+                accel = int(c.get(cv2.CAP_PROP_HW_ACCELERATION))
+                print(f"[CAP] Video decode: {'GPU' if accel else 'CPU'}")
+            except Exception:
+                c = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+                print("[CAP] Video decode: CPU")
             c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             return c
 
@@ -1483,11 +1622,9 @@ class TrackerThread(threading.Thread):
                 last_t = now_t
                 self.fps = 1.0 / dt if self.fps == 0 else 0.9 * self.fps + 0.1 / dt
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
             if self.tracking:
                 try:
-                    detection = self._track_frame(frame, frame_t, rgb, detector, tracker, ego)
+                    detection = self._track_frame(frame, frame_t, detector, tracker, ego)
                 except Exception as e:
                     # One bad frame must not end tracking for the rest of the
                     # service: stop the camera, log it, and carry on.
@@ -1573,12 +1710,14 @@ SETTINGS_SCHEMA = {
     "latency_comp":  _clamp_float(0.0, 2.0),
     "lost_timeout":  _clamp_float(1.0, 10.0, 1),
     "auto_mode":     _as_bool,
+    "pose_engine":   lambda v: str(v).strip().lower() if str(v).strip().lower() in ("auto", "gpu", "cpu") else "auto",
     "auto_style":    lambda v: str(v).strip().lower() if str(v).strip().lower() in AUTO_STYLES else "balanced",
     "anchor_enabled": _as_bool,
     "anchor_preset":  _clamp_int(0, 89),
     "anchor_range":   _clamp_int(1, 10),
     "anchor_dwell":   _clamp_float(0.3, 4.0, 1),
     "anchor_hold":    _clamp_float(0.10, 0.45),
+    "anchor_hold_top": _clamp_float(0.20, 1.0),
     "anchor_mode":    lambda v: "glide" if str(v).strip().lower() == "glide" else "recall",
     "anchor_glide":   _clamp_int(1, 24),
     "api_enabled":   _as_bool,
@@ -1752,6 +1891,7 @@ class Controller:
         d = SETTINGS.to_dict()
         d["api_enabled"] = SETTINGS.api_enabled
         d["api_port"]    = SETTINGS.api_port
+        d["pose_engine"] = SETTINGS.pose_engine
         return d
 
     def apply_settings(self, changes):
@@ -1781,7 +1921,7 @@ class Controller:
                 self.tracker.request_reset(full=False)
             if any(k.startswith("anchor_") for k in changed):
                 PROFILE_MANAGER.sync_anchor()
-            if self._stream_url() != before_url:
+            if self._stream_url() != before_url or "pose_engine" in changed:
                 self.restart_stream()
             if changed:
                 self.schedule_save(0.3)
@@ -1875,6 +2015,7 @@ class Controller:
             "mode":     s.anchor_mode,
             "range":    s.anchor_range,
             "hold":     s.anchor_hold,
+            "hold_top": s.anchor_hold_top,
             "state":    (tr.anchor_state if (tracking and tr and s.anchor_enabled) else "off"),
             "offset":   round(off, 1) if (off is not None and tracking) else None,
             "learning": self._learn["busy"],
@@ -1978,6 +2119,7 @@ class Controller:
                 "settings":  self.settings_view(),
                 "update":    self.updater.snapshot(),
                 "api":       self.server.api_state() if self.server else None,
+                "engine":    (dict(self.detector.engine) if self.detector else None),
                 "window":    "app" if self.window else "browser",
             })
         return out

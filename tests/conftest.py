@@ -66,6 +66,7 @@ def settings():
     s.tilt_dead, s.tilt_slow, s.tilt_fast = 0.17, 2, 10
     s.motion_smooth, s.latency_comp, s.lost_timeout = 10, 0.3, 2.0
     s.zoom_enabled, s.anchor_enabled = False, False
+    s.pose_engine = "cpu"        # tests drive fake pose models; never touch a real GPU
     yield s
     for k, v in saved.items():
         setattr(s, k, v)

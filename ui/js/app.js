@@ -255,7 +255,8 @@ function paintOverlay() {
 	ov.classList.toggle("holding", held);
 	const hz = $("#holdzone");
 	const hw = S.anchor?.hold ?? 0.25;
-	Object.assign(hz.style, { left: `${(0.5 - hw) * r.w}px`, width: `${2 * hw * r.w}px` });
+	const ht = S.anchor?.hold_top ?? 0.5;
+	Object.assign(hz.style, { left: `${(0.5 - hw) * r.w}px`, width: `${2 * hw * r.w}px`, height: `${ht * r.h}px` });
 
 	const z = $("#zoomChip");
 	z.hidden = !S.zooming;
@@ -322,6 +323,15 @@ function renderAuto(s) {
 	}
 	text("#autoStatus", line);
 	$("#autoStatus").style.color = color;
+}
+
+function renderEngine(s) {
+	const e = s.engine;
+	if (!e) return text("#engineStatus", s.stream === "live" ? "Starting…" : "Starts with the camera stream");
+	let line = e.device + (e.ms ? ` · ${Math.round(e.ms)} ms per frame` : "");
+	if (e.error) line += ` — ${e.error}`;
+	text("#engineStatus", line);
+	$("#engineStatus").style.color = e.error ? "var(--amber)" : e.engine === "gpu" ? "var(--green)" : "";
 }
 
 function renderSignal(s) {
@@ -519,6 +529,8 @@ function queueSetting(key, value, delay = 120) {
 		const res = await run("settings", { changes });
 		if (res && ("camera_ip" in changes || "rtsp_user" in changes || "rtsp_pass" in changes || "rtsp_stream" in changes)) {
 			toast("Reconnecting with the new camera settings…", "blue");
+		} else if (res && "pose_engine" in changes) {
+			toast("Restarting the stream on the new pose engine…", "blue");
 		}
 	}, delay);
 }
@@ -630,6 +642,7 @@ function renderSettings(s) {
 	}
 	renderAnchor(s);
 	renderAuto(s);
+	renderEngine(s);
 	text("#aboutVersion", `v${s.version}`);
 	const u = s.update;
 	if (u) {
