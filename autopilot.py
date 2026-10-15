@@ -14,9 +14,12 @@ walking one. Auto mode works in picture units instead and learns the rest:
        latency — seconds from sending a command to seeing it on video
   3. Subject velocity. Image velocity minus ego-motion = how the person is
      really moving, independent of the camera.
-  4. Prediction. The camera is steered toward where the subject will be once
-     everything already commanded has shown up on video (a Smith predictor),
-     which is what stops the overshoot-and-swing-back.
+  4. Delay compensation. The camera is steered by where the subject is seen,
+     corrected for moves already sent but not yet on video (a Smith
+     predictor), which stops the overshoot-and-swing-back. It doesn't try to
+     predict where the subject is going: the camera starts when they do, runs
+     at the pace they are measured to be walking, and aims only slightly
+     ahead (LEAD). When they stop it always centres them (RECENTRE_*).
   5. Situations. Still / walking / fast, with hysteresis, each with its own
      dead zone, responsiveness and speed cap; a still speaker gets a calm,
      locked-off shot, a walking one gets matched pace.
@@ -209,7 +212,7 @@ class LoopModel:
 # delay (see tests/test_autopilot.py for the comparison against manual).
 SITUATIONS = {
     "still":   dict(dead=0.12, settle=0.04, k=0.9, ff=0.0, vmax=0.25, accel=0.18),
-    "walking": dict(dead=0.06, settle=0.03, k=1.3, ff=0.9, vmax=0.70, accel=0.36),
+    "walking": dict(dead=0.06, settle=0.03, k=1.3, ff=1.0, vmax=0.70, accel=0.36),
     "fast":    dict(dead=0.04, settle=0.02, k=1.8, ff=1.0, vmax=1.40, accel=0.78),
 }
 TILT_SCALE = dict(dead=1.3, k=0.7, ff=0.5, vmax=0.5)   # people rarely move vertically
@@ -220,16 +223,22 @@ STYLES = {
     "responsive": dict(speed=1.35, dead=0.8),
 }
 
-WALK_ENTER, WALK_LEAVE = 0.07, 0.035   # subject speed, frame widths / s
+WALK_ENTER, WALK_LEAVE = 0.06, 0.03   # subject speed, frame widths / s
 FAST_ENTER, FAST_LEAVE = 0.40, 0.25
 LEAVE_AFTER            = 0.8           # s below a threshold before stepping down
 BRAKE                  = 2.5           # braking may be this much harder than accelerating
 EDGE                   = 0.32          # |error| past this: catch up at "fast" limits...
 EDGE_ACCEL             = 1.5           # ...accelerating up to this hard
-CATCH_UP, CATCH_UP_REL  = 0.03, 0.20    # max gap-closing speed while following
+CATCH_UP, CATCH_UP_REL = 0.004, 0.03   # fw/s (+ fraction of his pace) the camera may exceed his speed by to close a gap
+LEAD                   = 0.35          # fraction of (his speed x video delay) aimed ahead of him: a slight look-ahead
+LEAD_MAX               = 0.05          # ...and never more than this far (frame fraction)
+RECENTRE_DEAD          = 0.035         # once he has stopped, centre him if he is this far off...
+RECENTRE_SETTLE        = 0.015         # ...and stop when within this (frame fraction)
+RECENTRE_TIME          = 8.0           # s to keep trying after he stops before giving up (camera at its limit)
 REVERSE_HOLD           = 2.0           # s after a move during which...
 REVERSE_DEAD           = 0.20          # ...reversing needs this much error
 STEP_HOLD              = 0.8           # VISCA steps of change needed to switch step
+COAST_HOLD             = 0.2           # s a missed detection keeps the camera at its speed
 
 
 class _Axis:
@@ -247,6 +256,8 @@ class _Axis:
         self.b_ego  = 0.0     # latest background velocity (for diagnostics)
         self.last_side   = 0
         self.last_side_t = -1e9
+        self.recentre    = False  # he has been on the move: centre him once he stops
+        self.still_t     = None   # when he stopped
 
     def reset(self):
         self.__init__(self.axis)
@@ -461,6 +472,7 @@ class AutoPilot:
         self._last_dir = 0
         self._zoom_h0  = None
         self._zoom_check = None
+        self._gap_t    = None        # when the current run of missed detections began
 
     # ── Inputs ────────────────────────────────────────────────
 
@@ -468,6 +480,7 @@ class AutoPilot:
         for a in self.axes:
             a.reset()
         self.situation, self._below_t, self._last_t = "still", None, None
+        self._gap_t = None
         self._reversals.clear()
         self.zoom.reset()
 
@@ -508,6 +521,7 @@ class AutoPilot:
         """One detection. Returns (pan, tilt) VISCA speeds (pan + = left)."""
         dt = min(0.25, max(1e-3, now - self._last_t)) if self._last_t else None
         self._last_t = now
+        self._gap_t = None
         st = STYLES.get(style, STYLES["balanced"])
 
         if self._zoom_check and now >= self._zoom_check and self._zoom_h0:
@@ -517,6 +531,11 @@ class AutoPilot:
         for a, x in zip(self.axes, (cx, cy)):
             a.observe(now, x)
         self._classify(now, abs(self.axes[0].w))
+        for a in self.axes:
+            if self.situation != "still" and abs(a.w) >= WALK_LEAVE:
+                a.recentre, a.still_t = True, None
+            elif a.recentre and a.still_t is None:
+                a.still_t = now          # he has stopped
         self._guard(now, dt or 0.0)
         if dt is None:
             return self.output()
@@ -525,9 +544,17 @@ class AutoPilot:
         return tuple(self._axis(a, x, L, dt, st, now) for a, x in zip(self.axes, (cx, cy)))
 
     def coast(self, now):
-        """No detection this frame: ease the camera off."""
+        """
+        No detection this frame. A dropped frame or two (a turn, a gesture
+        across the torso) doesn't mean the speaker stopped, so the camera
+        keeps its speed for COAST_HOLD s, then eases off.
+        """
         dt = min(0.25, max(1e-3, now - self._last_t)) if self._last_t else 0.04
         self._last_t = now
+        if self._gap_t is None:
+            self._gap_t = now
+        if now - self._gap_t < COAST_HOLD:
+            return self.output()
         for a in self.axes:
             p = self._params(a)
             a.b_cmd = _approach(a.b_cmd, 0.0, p["accel"] * BRAKE * dt)
@@ -554,9 +581,22 @@ class AutoPilot:
     def _axis(self, a, x, L, dt, style, now):
         p = self._params(a, style)
         lead = min(1.0, abs(a.w) / WALK_ENTER)            # no lead for jitter
-        x_pred = x + a.w * L * lead + self.model.commanded_shift(now, a.axis, L)
+        lead = max(-LEAD_MAX, min(LEAD_MAX, LEAD * a.w * L * lead))
+        x_pred = x + lead + self.model.commanded_shift(now, a.axis, L)
         e = x_pred - 0.5
         side = (e > 0) - (e < 0)
+
+        # He has stopped after being on the move: centre him properly. A
+        # speaker who only sways keeps the wide, calm dead zone; one who just
+        # walked somewhere doesn't get left off to the side of it.
+        tight = a.recentre and a.still_t is not None
+        if tight:
+            if now - a.still_t > RECENTRE_TIME:
+                a.recentre = tight = False
+            else:
+                sc = style["dead"] * (TILT_SCALE["dead"] if a.axis else 1.0)
+                p["dead"] = min(p["dead"], RECENTRE_DEAD * sc)
+                p["settle"] = min(p["settle"], RECENTRE_SETTLE * sc)
 
         # Swinging back the other way right after a move needs a much bigger
         # error: when the subject stops, ~0.5 s of motion is already in the
@@ -572,6 +612,8 @@ class AutoPilot:
             a.active = 0
         if a.active:
             a.last_side, a.last_side_t = a.active, now
+        elif tight and abs(e) < p["settle"]:
+            a.recentre = False                            # centred: back to the calm hold
 
         vmax, accel = p["vmax"], p["accel"]
         if abs(x - 0.5) > EDGE:
@@ -581,10 +623,13 @@ class AutoPilot:
             vmax  = max(vmax,  f["vmax"] * style["speed"] * tilt)
             accel = max(accel, EDGE_ACCEL * style["speed"] * tilt)
         fb = -p["k"] * e if a.active else 0.0
-        if self.situation != "still":
-            # Close the gap gently on top of matching the subject's pace.
-            # Unlimited catch-up ran the camera at twice a walker's speed and
-            # carried it past them when they stopped.
+        if tight and a.active:
+            # A small error asks for less than one speed step; give it one so the move happens
+            fb = -a.active * max(abs(fb), 0.8 * self.model.gain[a.axis])
+        if self.situation != "still" and not tight:
+            # Match his pace and nothing more. Closing the gap faster than that
+            # ran the camera ahead of the walker and carried it past them when
+            # they stopped; the gap closes when he slows or stops.
             catch = CATCH_UP + CATCH_UP_REL * abs(a.w)
             fb = max(-catch, min(catch, fb))
         ff = -p["ff"] * a.w if self.situation != "still" else 0.0

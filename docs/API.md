@@ -75,7 +75,7 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
 | `tracking` | bool | Auto-tracking is on. |
 | `locked` | bool | Lock-on is active (only ever `true` while tracking). |
 | `subject` | bool | A person is currently detected (only while tracking). |
-| `detection` | object \| null | The detected subject's box, as fractions of the frame (0–1): center `cx`/`cy`, size `w`/`h`. It's `null` when nobody is detected or tracking is off. |
+| `detection` | object \| null | The detected subject's box, as fractions of the frame (0–1): `cx`/`cy` (the aim point the camera centres on, drawn as the dot on the video preview), size `w`/`h`. It's `null` when nobody is detected or tracking is off. |
 | `autozoom` | bool | Auto-zoom is enabled. |
 | `zooming` | `-1` \| `0` \| `1` | Auto-zoom is currently zooming out, idle, or zooming in. |
 | `motion_sync` | bool | PTZOptics Motion Sync is enabled. |

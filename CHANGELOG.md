@@ -1,6 +1,19 @@
 # Changelog
 
-## v1.8.4 — 2026-10-04
+## v1.8.5 — 2026-10-14
+
+This release also includes everything prepared as v1.8.4, which was never released on its own: the lighter GPU model, the pulpit-check fix and Auto zoom (the *Frame rate* and *Auto zoom* sections at the end).
+
+### Auto mode follows the speaker instead of guessing
+- **Goes when he goes, at his pace.** The camera starts once the speaker does and matches the walking speed it measures. It used to extrapolate his speed over the video delay and add catch-up speed on top, so it ran 15–30% faster than he walked and carried past him when he stopped. In simulation its speed during a walk is now within about 5–10% of his (VISCA speeds are whole steps, so a tight zoom can't always match exactly).
+- **Only a slight look-ahead.** The aim point leads the speaker by a fraction of his speed × the video delay, capped at 5% of the frame. In simulation the camera ends up about 2% of the frame ahead of him on average, 4% at most.
+- **Always centres him when he stops.** After the speaker has been on the move, the calm dead zone is dropped as soon as he stops: Auto brings him to within a few percent of the centre (within about 1.3% on average at the end of each pause in a pacing test), then goes back to the calm hold. It gives up after 8 s if the camera can't get there. A speaker who only sways or gestures is still left alone.
+- **Starts a little sooner.** Walking is recognised at a slightly lower speed (0.06 instead of 0.07 frame widths per second), so the camera gets going about 0.1 s earlier. Most of what's left is the video delay and the camera's own ramp-up.
+- **A missed frame doesn't slam the brakes.** If the speaker isn't detected for a frame or two while walking, the camera keeps its speed for 0.2 s before easing off, which removed most of the stop-start pulses in the pacing tests.
+- In the simulated comparison, tracking error fell by about 7%, camera jerk by about 19%, and stop-starts did not increase.
+
+### Interface
+- **The round aim dot is back.** A dot at the centre of the green (or amber, when locked) reticle marks the exact point the camera is trying to centre. It was drawn on the old interface's video and went missing in the redesign. It follows the *Tracking overlay* setting.
 
 ### Frame rate
 - **About 40% less GPU work per frame.** A 16:9 camera picture only filled 640×360 of the model's 640×640 input; the rest was grey padding the GPU processed every frame. The model now takes 640×384 (`models/rtmo-s-u8-640x384.onnx`, same network and weights, only the size-dependent constants trimmed). Checked against the 640×640 model on test photos: the same people found, keypoints within 1% of the frame. On CPU ONNX Runtime it takes 63% of the time; the GPU gain should be similar, so the RTX 2060 running vMix should get much closer to the camera's 30 fps.
