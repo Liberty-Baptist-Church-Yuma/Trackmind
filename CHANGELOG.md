@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.8.5 — 2026-10-14
+
+This release also ships work prepared after v1.8.3 that never went out: the lighter GPU model, the pulpit-check fix and Auto zoom (the *Frame rate* and *Auto zoom* sections at the end). It builds on the v1.8.4 service fixes below, which stay in.
+
+### Auto mode follows the speaker instead of guessing
+- **Goes when he goes, at his pace.** The camera starts once the speaker does and matches the walking speed it measures. It used to extrapolate his speed over the video delay and add catch-up speed on top, so it ran 15–30% faster than he walked and carried past him when he stopped. In simulation its speed during a walk is now within about 5–10% of his (VISCA speeds are whole steps, so a tight zoom can't always match exactly).
+- **Only a slight look-ahead.** The aim point leads the speaker by a fraction of his speed × the video delay, capped at 5% of the frame. In simulation the camera ends up about 2% of the frame ahead of him on average, 4% at most.
+- **Always centres him when he stops.** After the speaker has been on the move, the calm dead zone is dropped as soon as he stops: Auto brings him to within a few percent of the centre (within about 1.3% on average at the end of each pause in a pacing test), then goes back to the calm hold. It gives up after 8 s if the camera can't get there. A speaker who only sways or gestures is still left alone. **Settings → Tracking → Centre after moving** (on by default, per profile) turns it off.
+- **Fast walkers are still caught before they leave the picture.** The v1.8.4 edge check keeps using the full predicted position (his speed × the measured video delay); only the point the camera aims at leads him slightly. *Adapt to video delay* still follows harder for a longer delay, and its limits now apply on top of the gentler gap-closing.
+- **Starts a little sooner.** Walking is recognised at a slightly lower speed (0.06 instead of 0.07 frame widths per second), so the camera gets going about 0.1 s earlier. Most of what's left is the video delay and the camera's own ramp-up.
+- **A missed frame doesn't slam the brakes.** If the speaker isn't detected for a frame or two while walking, the camera keeps its speed for 0.2 s before easing off, which removed most of the stop-start pulses in the pacing tests.
+- In the simulated comparison, tracking error fell by about 7%, camera jerk by about 19%, and stop-starts did not increase.
+
+### Interface
+- **The round aim dot is back.** A dot at the centre of the green (or amber, when locked) reticle marks the exact point the camera is trying to centre. It was drawn on the old interface's video and went missing in the redesign. It follows the *Tracking overlay* setting.
+
+### Frame rate
+- **About 40% less GPU work per frame.** A 16:9 camera picture only filled 640×360 of the model's 640×640 input; the rest was grey padding the GPU processed every frame. The model now takes 640×384 (`models/rtmo-s-u8-640x384.onnx`, same network and weights, only the size-dependent constants trimmed). Checked against the 640×640 model on test photos: the same people found, keypoints within 1% of the frame. On CPU ONNX Runtime it takes 63% of the time; the GPU gain should be similar, so the RTX 2060 running vMix should get much closer to the camera's 30 fps.
+- **Tracking no longer stalls behind the pulpit position check.** With the pulpit anchor set, Trackmind asks the camera where it's pointing four times a second. While it waited for the answer (up to 0.3 s) it held the camera connection, so any pan/tilt command the tracker sent meanwhile — and the whole tracking loop — waited too. Now only the send itself is exclusive.
+
+### Auto zoom
+- **Zoom is part of Auto mode.** With Auto and Auto-zoom both on, Trackmind zooms the way it pans: it frames the speaker first and zooms in only once they've settled, centred, with the camera still; it stops zooming in if they start walking; it zooms out promptly when they're too big and goes a little wider while they move fast.
+- **Eases in, no overshoot.** Zoom speed is proportional to how far off the size is, so it slows as it nears the target, and it stops early by what the video delay will still add. **Zoom speed** is the top speed in Auto mode (3–5 works well).
+- **Learns your camera's zoom rate**, remembers it, and notices the end of the zoom range instead of asking for more.
+- **Steadier size reading (Auto and manual zoom).** The speaker's size now comes from the torso (shoulders to hips). The old reading shrank by a third the moment knees or hips left a tight shot, which made zoom keep zooming in. The zoom target means the same as before.
+
 ## v1.8.4 — 2026-10-11
 
 Fixes from the 2026-10-11 Sunday service, where a speaker who stepped off quickly was let half out of the picture, the camera then whip-panned past him, and the lock took a seated person instead.

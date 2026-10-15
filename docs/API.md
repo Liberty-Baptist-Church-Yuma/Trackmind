@@ -75,7 +75,7 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
 | `tracking` | bool | Auto-tracking is on. |
 | `locked` | bool | Lock-on is active (only ever `true` while tracking). |
 | `subject` | bool | A person is currently detected (only while tracking). |
-| `detection` | object \| null | The detected subject's box, as fractions of the frame (0–1): center `cx`/`cy`, size `w`/`h`. It's `null` when nobody is detected or tracking is off. |
+| `detection` | object \| null | The detected subject's box, as fractions of the frame (0–1): `cx`/`cy` (the aim point the camera centres on, drawn as the dot on the video preview), size `w`/`h`. It's `null` when nobody is detected or tracking is off. |
 | `autozoom` | bool | Auto-zoom is enabled. |
 | `zooming` | `-1` \| `0` \| `1` | Auto-zoom is currently zooming out, idle, or zooming in. |
 | `motion_sync` | bool | PTZOptics Motion Sync is enabled. |
@@ -85,7 +85,7 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
 | `home_preset` | int | Preset used by `home` and by lost-subject recovery. |
 | `anchor` | object | Pulpit anchor for the active profile. `state` is `"off"` (disabled or not tracking), `"free"` (tracking normally), `"snapping"` (recalling the preset or gliding to the pulpit) or `"held"` (holding the pulpit shot). `offset` is how far the camera is from the learned pulpit, in Snap-range steps (`null` when unknown or while holding). `learned` is `false` until **Learn pulpit** has been run for this profile. `mode` is `"recall"` or `"glide"`. `range` (Snap range, compare with `offset`) `hold` (hold-zone half-width, fraction of the frame) and `hold_top` (hold-zone height from the top of the frame) are the profile's settings. `learning`/`error` report the Learn pulpit run. |
 | `lock_size_check` | bool | While the locked subject is unseen (under 2 s), people much smaller or larger than them are ignored. |
-| `auto` | object | Auto mode. `enabled`, `style` (`"calm"`, `"balanced"`, `"responsive"`) and `delay_adapt` (Adapt to video delay) are always present. While tracking with Auto on it also reports `situation` (`"still"`, `"walking"`, `"fast"`), whether the camera model is `learned` yet, the learned `gain_pan`/`gain_tilt` (frame widths per second per VISCA speed step), `latency` (seconds from command to video), `fit_r2` (how well the model fits, 0–1) and `soften` (1 = normal, lower = the hunting guard has eased off). |
+| `auto` | object | Auto mode. `enabled`, `style` (`"calm"`, `"balanced"`, `"responsive"`) `delay_adapt` (Adapt to video delay) and `recentre` (Centre after moving) are always present. While tracking with Auto on it also reports `situation` (`"still"`, `"walking"`, `"fast"`), whether the camera model is `learned` yet, the learned `gain_pan`/`gain_tilt` (frame widths per second per VISCA speed step), `latency` (seconds from command to video), `fit_r2` (how well the model fits, 0–1) and `soften` (1 = normal, lower = the hunting guard has eased off). |
 | `profile` | string \| null | Last loaded profile. |
 | `profiles` | string[] | Names of all saved profiles. |
 | `values` | object | Live values you can change with [`adjust`](#post-apiadjust). |

@@ -94,12 +94,12 @@ The live camera fills the window. Every control floats over the picture as liqui
 | **Top center** | Tally pill: **TRACKING** (green), **LOCKED** (amber), **PAUSED**, **CONNECTING** (amber), **NO SIGNAL** (red). Next to it is what the tracker is doing right now. |
 | **Top right** | Camera chip (IP and live FPS; click it for camera settings), **Live tune**, **Full screen**, **Settings** |
 | **Bottom dock** | The buttons you use during a service: **Tracking**, **Lock**, **Auto**, **Auto-Zoom**, **Home** |
-| **On the video** | A green reticle follows the subject (it turns amber when locked). The dashed box is the dead zone, where the camera stays still. While the [pulpit anchor](#pulpit-anchor) holds the shot, a **Holding on pulpit** chip shows at the top and an amber band marks the hold zone. |
+| **On the video** | A green reticle follows the subject (it turns amber when locked), with a round **aim dot** at the exact point the camera is trying to centre. The dashed box is the dead zone, where the camera stays still. While the [pulpit anchor](#pulpit-anchor) holds the shot, a **Holding on pulpit** chip shows at the top and an amber band marks the hold zone. |
 
 - **Tracking (T):** when on, the camera follows whoever is detected in frame. When off, the camera stops, and you have full manual control from a joystick, Stream Deck, vMix, or any other controller.
 - **Lock (L):** while tracking, locks onto the current subject and ignores everyone else. Turning tracking off releases the lock.
 - **Auto (A):** Auto mode. Trackmind chooses the speed, dead zones and smoothing itself, adapting to the zoom and to whether the speaker is standing still, walking or moving fast. The button shows what it's doing: *Steady*, *Following*, *Catching up*, or *Learning the camera* during its first moves.
-- **Auto-Zoom (Z):** zooms in and out to keep the subject filling the frame.
+- **Auto-Zoom (Z):** zooms in and out to keep the subject filling the frame. With Auto mode on, zoom is automatic too: it frames first and zooms once the speaker settles, eases into the target, and never chases a walking speaker with zoom.
 - **Home (H):** recalls the home preset and pauses tracking so the shot holds.
 
 ### Live tune
@@ -177,6 +177,7 @@ It needs a camera that answers the VISCA pan/tilt position inquiry. PTZOptics ca
 |---|---|---|
 | Auto mode | Off | Trackmind picks speed, dead zones and smoothing to suit the situation, and learns how your camera moves. While it's on, the manual speed, dead-zone and smoothing settings below are greyed out. Saved per profile. |
 | Auto style | Balanced | **Calm** moves less and more gently, **Responsive** follows more tightly. |
+| Centre after moving | On | When the speaker stops after moving, Auto brings them to the middle of the picture (within a few percent), then goes back to the calm hold. Off leaves them wherever they stopped inside the dead zone. Saved per profile. |
 | Adapt to video delay | On | Auto follows a moving speaker harder the longer the camera's measured video delay (up to 2× at 0.8 s), and starts catching up on where the speaker will be once the delay plays out, so a quick walker isn't let out of the picture. Auto never goes faster than **Pan / Tilt · fast**. Saved per profile. |
 | Auto status | | What Auto is doing, and what it has learned: how far one speed step moves the picture, and the video delay. |
 | Vertical aim | 2 | −7 = top of head, 0 = centered, +7 = feet |
@@ -194,7 +195,7 @@ It needs a camera that answers the VISCA pan/tilt position inquiry. PTZOptics ca
 | Auto-zoom | Off | Keep the subject filling the frame |
 | Target fill | 45% | How much of the frame height the subject fills. 45 = wider, 80 = tight. |
 | Tolerance | 20% | How far off target before zoom kicks in. Higher = less hunting. |
-| Zoom speed | 1 | Motor speed 0–7. Start at 1 for smooth motion. |
+| Zoom speed | 1 | Motor speed 0–7. Start at 1 for smooth motion. In Auto mode this is the *top* speed: Auto picks the speed itself and slows down as it nears the target, so 3–5 works well there. |
 
 ### Advanced
 
@@ -203,7 +204,7 @@ It needs a camera that answers the VISCA pan/tilt position inquiry. PTZOptics ca
 | Latency compensation | 0.40 s | Look-ahead that offsets RTSP delay. Too high causes oscillation. |
 | Lost timeout | 2.0 s | Seconds before returning to the home preset when the subject is missing |
 | Glass | Liquid | **Lite** skips the refraction effect on slower PCs |
-| Tracking overlay | On | Show or hide the reticle and dead-zone guide |
+| Tracking overlay | On | Show or hide the reticle, aim dot and dead-zone guide |
 | Pulpit hold zone | On | Outline the pulpit hold zone while the shot is held (this PC only) |
 
 ### Stream Deck
@@ -280,9 +281,11 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 
 **Pulpit anchor:** while the anchor is on, Trackmind asks the camera for its absolute pan/tilt about 4 times a second (VISCA `Pan-tiltPosInq`). When the camera has stopped within the snap range of the learned pulpit position for the settle time, it recalls the pulpit preset or glides there (VISCA absolute move). It then ignores small movements until the speaker leaves the hold zone.
 
-**GPU processing:** pose detection runs on the graphics card when there's a usable one. It uses [RTMO](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmo) through ONNX Runtime with DirectML, so any DirectX 12 GPU works (NVIDIA, AMD or Intel) with no CUDA install. The GPU with the most video memory is picked automatically. RTMO finds *everyone* in the frame, so the subject lock simply picks the right person instead of having to crop the picture. The camera stream is also decoded on the GPU when the driver allows. If there's no usable GPU, or it fails mid-service, Trackmind carries on with MediaPipe on the CPU. **Settings → Advanced → Processing** shows which engine is in use and how long each frame takes. On an RTX 2060 shared with vMix it ran at roughly twice the frame rate with half the CPU time per frame.
+**GPU processing:** pose detection runs on the graphics card when there's a usable one. It uses [RTMO](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmo) through ONNX Runtime with DirectML, so any DirectX 12 GPU works (NVIDIA, AMD or Intel) with no CUDA install. The GPU with the most video memory is picked automatically. RTMO finds *everyone* in the frame, so the subject lock simply picks the right person instead of having to crop the picture. The camera stream is also decoded on the GPU when the driver allows. The model looks at a 640×384 picture, the 16:9 part of the published 640×640 model's input, which is about 40% less GPU work per frame for the same detections. If there's no usable GPU, or it fails mid-service, Trackmind carries on with MediaPipe on the CPU. **Settings → Advanced → Processing** shows which engine is in use and how long each frame takes. On an RTX 2060 shared with vMix it ran at roughly twice the frame rate with half the CPU time per frame.
 
-**Auto mode:** instead of fixed speeds, Auto works in picture terms and learns the rest while it runs. Each frame it measures how the background moved (phase correlation), which is the camera's own motion. Comparing that with the speeds it sent, it learns how far one speed step moves the picture at the current zoom, and the delay between a command and the video. From that it knows how the speaker is really moving, regardless of what the camera is doing. It steers toward where the speaker will be once the moves already sent show up on video, which is what stops overshoot. It recognises three situations: *still* (calm, wide dead zone, centres gently), *walking* (matches the speaker's pace and closes the gap gently) and *fast* (catches up hard, only when needed). If the camera ever starts bouncing back and forth, it eases itself off. What it learns about the camera is remembered between sessions. See `autopilot.py`.
+**Auto mode:** instead of fixed speeds, Auto works in picture terms and learns the rest while it runs. Each frame it measures how the background moved (phase correlation), which is the camera's own motion. Comparing that with the speeds it sent, it learns how far one speed step moves the picture at the current zoom, and the delay between a command and the video. From that it knows how the speaker is really moving, regardless of what the camera is doing. It doesn't try to predict where the speaker is going: the camera starts when they start, runs at the pace they're measured to be walking, and stops when they stop. It aims only slightly ahead of them (a few percent of the frame, never more than 5%) and allows for moves it has already sent that haven't shown up on video yet, which is what stops overshoot. When the speaker stops after moving, it always centres them (to within a few percent of the frame, limited at tight zoom by the camera's smallest speed step); a speaker who only sways or gestures keeps the calm, wide dead zone. It recognises three situations: *still* (calm, wide dead zone, centres gently), *walking* (matches the speaker's pace, no faster) and *fast* (catches up hard, only when needed). A frame or two with no detection doesn't brake the camera. If the camera ever starts bouncing back and forth, it eases itself off. What it learns about the camera is remembered between sessions. See `autopilot.py`.
+
+**Auto zoom:** with Auto mode and Auto-zoom both on, zoom gets the same treatment. The speaker's size is read from the torso (shoulders to hips), so it doesn't jump when the legs leave a tight shot, which used to make the old zoom keep zooming in. It zooms in only once the speaker is still, centred and the camera has stopped moving, and stops zooming in if they start walking. It zooms out promptly when they're too big, and goes a little wider while they move fast. The speed is proportional to how far off the size is, so it eases into the target, and it stops early by what the video delay will still add. It learns how fast your camera zooms, and notices when the lens is at the end of its range instead of asking for more.
 
 **Lock-on:** MediaPipe Pose only reports one person — whoever it judges most prominent. So while LOCK is active, pose runs on a crop of the frame around the locked subject, and anyone else is mostly outside what the model sees. If the subject disappears, the search follows the direction they were moving and widens the longer they're gone, until it covers the whole frame. After the camera goes to its home preset, the lock picks up the most prominent person again.
 
@@ -376,7 +379,7 @@ The full reference, with every field, error code, and example, is in [`docs/API.
 
 ## Built with
 
-- [RTMO](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmo) (OpenMMLab MMPose, Apache-2.0): GPU multi-person pose detection. The model ships as `models/rtmo-s-u8.onnx`; see `models/LICENSE-RTMO.txt`
+- [RTMO](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmo) (OpenMMLab MMPose, Apache-2.0): GPU multi-person pose detection. The model ships as `models/rtmo-s-u8-640x384.onnx` (the published 640×640 model with its input cut to the 16:9 part of the frame); see `models/LICENSE-RTMO.txt`
 - [ONNX Runtime](https://onnxruntime.ai) with DirectML: GPU inference
 - [MediaPipe](https://mediapipe.dev): pose detection on the CPU (fallback)
 - [OpenCV](https://opencv.org): video capture

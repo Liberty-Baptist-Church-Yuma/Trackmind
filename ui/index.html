@@ -51,6 +51,7 @@
 			<div class="holdzone" id="holdzone"><span>Hold zone</span></div>
 			<div class="reticle" id="reticle">
 				<i></i><i></i><i></i><i></i>
+				<b class="reticle-dot"></b>
 				<span class="reticle-tag" id="reticleTag">Subject</span>
 			</div>
 			<div class="hold-chip glass glass--clear" id="holdChip" data-glass data-refract="18" data-bezel="10" hidden>
@@ -229,6 +230,8 @@
 				</div>
 				<div class="row"><span>Adapt to video delay <small class="hint">follows harder when the camera's video arrives late, and catches up before the speaker reaches the edge</small></span>
 					<input type="checkbox" class="switch" data-setting="auto_delay_adapt" /></div>
+				<div class="row"><span>Centre after moving <small class="hint">when the speaker stops after walking, bring them to the middle instead of leaving them anywhere in the calm zone</small></span>
+					<input type="checkbox" class="switch" data-setting="auto_recentre" /></div>
 				<div class="row"><span>Auto status <small class="hint" id="autoStatus">Off</small></span></div>
 			</div>
 			<div class="card" data-tone="green">
@@ -268,7 +271,7 @@
 					<div class="slider-row"><input class="slider" type="range" min="20" max="90" step="1" data-setting="zoom_target" data-scale="100" data-suffix="%" /><output class="value num"></output></div></div>
 				<div class="row col"><span>Tolerance <small class="hint">higher = less hunting</small></span>
 					<div class="slider-row"><input class="slider" type="range" min="5" max="40" step="1" data-setting="zoom_dead" data-scale="100" data-suffix="%" /><output class="value num"></output></div></div>
-				<div class="row col"><span>Zoom speed <small class="hint">start at 1 for smooth motion</small></span>
+				<div class="row col"><span>Zoom speed <small class="hint">start at 1 for smooth motion · in Auto mode the top speed (3–5 works well)</small></span>
 					<div class="slider-row"><input class="slider" type="range" min="0" max="7" step="1" data-setting="zoom_speed" /><output class="value num"></output></div></div>
 			</div>
 		</section>

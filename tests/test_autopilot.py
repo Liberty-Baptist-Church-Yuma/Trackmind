@@ -11,7 +11,7 @@ import pytest
 
 import autopilot
 import autotrack
-from autopilot import AutoPilot, LoopModel, _Axis
+from autopilot import STYLES, AutoPilot, LoopModel, _Axis
 from camsim import Camera, fast_exit, pacing, quick_exit, simulate, still_with_sway, walk_then_stop
 
 
@@ -303,6 +303,136 @@ def test_new_tracking_settings_are_per_profile_and_validate():
     assert d["auto_delay_adapt"] is True and d["lock_size_check"] is True
     assert autotrack.SETTINGS_SCHEMA["auto_delay_adapt"]("off") is False
     assert autotrack.SETTINGS_SCHEMA["lock_size_check"]("on") is True
+
+
+def _walk_metrics(settings, clock, fws, fov=25, seed=5):
+    """Closed-loop walk at `fws` frame widths/s: (camera/speaker speed in mid-walk, start delay s, max lead of camera over speaker in frames)."""
+    _configure(settings, "auto")
+    cam = Camera(fov=fov, video_latency=0.4, miss_rate=0.05)
+    tr, v = _warm(cam, clock)
+    speed, dist, start = fws * fov, 0.6 * fov, 2.0
+    script = walk_then_stop(dist=dist, speed=speed, start=start)
+    t_stop = start + dist / speed
+    r = simulate(autotrack, clock, v, script, cam, seconds=t_stop + 5, seed=seed, tracker=tr)
+    mid = [c for t, c in zip(r.t, r.cam_v) if start + 1.5 < t < t_stop - 0.3]
+    delay = next(t - start for t, c in zip(r.t, r.cam_v) if t > start and c > 0.3 * speed)
+    ang, lead = 0.0, 0.0
+    for i in range(1, len(r.t)):
+        ang += r.cam_v[i] * (r.t[i] - r.t[i - 1])
+        lead = max(lead, (ang - script(r.t[i])) / fov)
+    return sum(mid) / len(mid) / speed, delay, lead
+
+
+@pytest.mark.parametrize("fws", [0.08, 0.12])
+def test_auto_goes_when_he_goes_at_his_speed(settings, clock, fws):
+    """The camera starts once he does, runs at his pace (not much faster) and gets only slightly ahead of him."""
+    ratio, delay, lead = _walk_metrics(settings, clock, fws)
+    assert 0.9 <= ratio <= 1.2, "camera should travel at about the speaker's speed"
+    assert delay < 1.5, "camera should start moving soon after he does"
+    assert lead < 0.06, "camera ran well ahead of the speaker"
+
+
+def test_look_ahead_is_slight():
+    """A walker's speed nudges the aim point a little ahead of him, never far."""
+    p = AutoPilot(gain_pan=0.1)
+    a = p.axes[0]
+    a.w = 0.5                                   # walking right, very fast
+    p.situation = "walking"
+    p._axis(a, 0.5, 0.8, 0.05, STYLES["balanced"], 100.0)
+    assert not a.active, "a centred walker must not trigger a re-centre from a predicted position"
+    p._axis(a, 0.5 + autopilot.LEAD_MAX + 0.02, 0.8, 0.05, STYLES["balanced"], 100.1)
+    assert a.active, "the look-ahead must be capped at LEAD_MAX"
+
+
+def _stopped(p, offset):
+    """An AutoPilot whose speaker has stopped `offset` right of centre, camera idle."""
+    p.situation = "still"
+    a = p.axes[0]
+    a.w = 0.0
+    return a
+
+
+def test_centres_him_after_a_move_but_leaves_a_swayer_alone():
+    # 8% off-centre is inside the calm dead zone of a still speaker...
+    calm = AutoPilot(gain_pan=0.1)
+    a = _stopped(calm, 0.08)
+    out = [calm._axis(a, 0.58, 0.4, 0.07, STYLES["balanced"], 100.0 + 0.07 * i) for i in range(10)]
+    assert not any(out) and not a.active
+    # ...but after he has been walking, being left there is not acceptable
+    moved = AutoPilot(gain_pan=0.1)
+    a = _stopped(moved, 0.08)
+    a.recentre, a.still_t = True, 99.0
+    out = [moved._axis(a, 0.58, 0.4, 0.07, STYLES["balanced"], 100.0 + 0.07 * i) for i in range(10)]
+    assert a.active and out[-1] < 0, "should pan right to centre him"
+
+
+def test_centre_after_moving_can_be_turned_off():
+    p = AutoPilot(gain_pan=0.1)
+    a = _stopped(p, 0.08)
+    a.recentre, a.still_t = True, 99.0
+    out = [p._axis(a, 0.58, 0.4, 0.07, STYLES["balanced"], 100.0 + 0.07 * i, recentre=False) for i in range(10)]
+    assert not any(out) and not a.active, "off: left where he stopped, inside the calm zone"
+
+
+def test_recentre_setting_is_per_profile_and_validates():
+    assert autotrack.Settings().to_dict()["auto_recentre"] is True
+    assert autotrack.SETTINGS_SCHEMA["auto_recentre"]("off") is False
+
+
+def test_recentring_ends_when_centred_or_gives_up():
+    p = AutoPilot(gain_pan=0.1)
+    a = _stopped(p, 0.0)
+    a.recentre, a.still_t = True, 99.0
+    p._axis(a, 0.505, 0.4, 0.07, STYLES["balanced"], 100.0)
+    assert not a.recentre, "centred: back to the calm hold"
+    b = _stopped(p, 0.0)
+    b.recentre, b.still_t = True, 100.0
+    p._axis(b, 0.58, 0.4, 0.07, STYLES["balanced"], 100.0 + autopilot.RECENTRE_TIME + 1)
+    assert not b.recentre, "camera can't get there: stop trying"
+
+
+@pytest.mark.parametrize("fov", [40, 25, 10])
+def test_auto_centres_the_speaker_when_he_stops(settings, clock, fov):
+    _configure(settings, "auto")
+    cam = Camera(fov=fov, video_latency=0.4, miss_rate=0.05)
+    tr, v = _warm(cam, clock)
+    r = simulate(autotrack, clock, v, walk_then_stop(dist=0.6 * fov, speed=0.1 * fov, start=2.0),
+                 cam, seconds=2 + 6 + 6, seed=5, tracker=tr)
+    assert r.max_error(11.5, 14) < 0.04, "speaker not centred after the move"
+
+
+def test_auto_centres_at_the_end_of_every_pause(settings, clock):
+    """A pacing speaker (walk, pause 2 s, walk back...) is centred by the end of each pause."""
+    from camsim import pacing as pacing_script
+    _configure(settings, "auto")
+    amp, spd, pause, start = 5.0, 3.0, 2.0, 1.0
+    leg = amp / spd
+    errs = []
+    for fov in (40, 10):
+        cam = Camera(fov=fov, video_latency=0.4, miss_rate=0.05)
+        tr, v = _warm(cam, clock)
+        r = simulate(autotrack, clock, v, pacing_script(amp, spd, pause, start), cam, seconds=20, seed=31, tracker=tr)
+        for n in range(1, 6):
+            end = start + n * (leg + pause)
+            errs += [abs(x - 0.5) for t, x in zip(r.t, r.x) if end - 0.4 < t < end]
+    assert sum(errs) / len(errs) < 0.025
+    assert sorted(errs)[int(0.9 * len(errs))] < 0.07     # tight zoom: one speed step is ~10% of the frame per second
+
+
+def test_brief_dropout_keeps_camera_speed():
+    """A missed frame or two while he walks doesn't brake the camera (that was a stop-start)."""
+    p = AutoPilot(gain_pan=0.1)
+    a = p.axes[0]
+    p.situation = "walking"
+    a.b_cmd = -0.30
+    held = p.coast(10.0)[0]
+    p.coast(10.1)
+    assert a.b_cmd == -0.30 and held == p.output()[0] != 0
+    for i in range(1, 12):                      # a longer gap does ease the camera off
+        p.coast(10.1 + 0.05 * i)
+    assert abs(a.b_cmd) < 0.30
+    p.step(11.0, 0.5, 0.5, 0.4)                 # detection back: the gap timer restarts
+    assert p._gap_t is None
 
 
 def _score(settings, clock, mode, seeds=(21, 22)):

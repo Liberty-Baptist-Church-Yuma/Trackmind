@@ -143,6 +143,19 @@ body[data-tracking="true"] .deadzone { opacity: 1; }
 .reticle i:nth-child(2) { right: 0; top: 0;    border-left: 0;  border-bottom: 0; border-top-right-radius: 12px; }
 .reticle i:nth-child(3) { right: 0; bottom: 0; border-left: 0;  border-top: 0;    border-bottom-right-radius: 12px; }
 .reticle i:nth-child(4) { left: 0;  bottom: 0; border-right: 0; border-top: 0;    border-bottom-left-radius: 12px; }
+/* The aim dot: the exact point the camera is trying to centre (torso line, adjusted by Vertical aim) */
+.reticle-dot {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 11px;
+	height: 11px;
+	transform: translate(-50%, -50%);
+	border-radius: 50%;
+	background: rgb(var(--c));
+	border: 1.5px solid rgba(255, 255, 255, 0.92);
+	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 10px 2px rgba(var(--c), 0.75), 0 1px 3px rgba(0, 0, 0, 0.6);
+}
 .reticle-tag {
 	position: absolute;
 	left: 50%;

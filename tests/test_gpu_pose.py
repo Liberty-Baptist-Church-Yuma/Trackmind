@@ -69,9 +69,15 @@ def test_letterbox_is_uint8_nhwc_and_padded():
     if not hasattr(cv2, "resize"):
         pytest.skip("OpenCV stubbed")
     x, r = pose_gpu.letterbox(np.zeros((720, 1280, 3), np.uint8))
-    assert x.shape == (1, 640, 640, 3) and x.dtype == np.uint8
+    assert x.shape == (1, 384, 640, 3) and x.dtype == np.uint8      # 16:9 → 640×360 + 24 rows
     assert r == pytest.approx(0.5)
+    assert x[0, 370, 10, 0] == 114 and x[0, 100, 10, 0] == 0
+    x, r = pose_gpu.letterbox(np.zeros((720, 1280, 3), np.uint8), 640)   # square build
+    assert x.shape == (1, 640, 640, 3)
     assert x[0, 400, 10, 0] == 114 and x[0, 100, 10, 0] == 0
+    x, r = pose_gpu.letterbox(np.zeros((480, 640, 3), np.uint8))          # 4:3 still fits
+    assert x.shape == (1, 384, 640, 3) and r == pytest.approx(0.8)
+    assert x[0, 100, 600, 0] == 114 and x[0, 100, 500, 0] == 0
 
 
 # ── Choosing the subject among several people ─────────────────
@@ -256,3 +262,16 @@ def test_real_model_on_directml():
     g = pose_gpu.GpuPose()
     assert g.infer(np.zeros((720, 1280, 3), np.uint8)) == []
     assert g.ms is not None
+
+
+def test_shipped_model_is_the_640x384_build():
+    ort = pytest.importorskip("onnxruntime")
+    path = pose_gpu.find_model()
+    if not path:
+        pytest.skip("model not present")
+    assert path.endswith(pose_gpu.MODEL_FILE)
+    s = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+    inp = s.get_inputs()[0]
+    assert inp.type == "tensor(uint8)" and list(inp.shape) == [1, *pose_gpu.INPUT, 3]
+    dets, kps = s.run(None, {inp.name: np.full((1, *pose_gpu.INPUT, 3), 114, np.uint8)})
+    assert dets.shape[-1] == 5 and kps.shape[-2:] == (17, 3)

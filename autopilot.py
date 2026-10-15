@@ -14,14 +14,19 @@ walking one. Auto mode works in picture units instead and learns the rest:
        latency — seconds from sending a command to seeing it on video
   3. Subject velocity. Image velocity minus ego-motion = how the person is
      really moving, independent of the camera.
-  4. Prediction. The camera is steered toward where the subject will be once
-     everything already commanded has shown up on video (a Smith predictor),
-     which is what stops the overshoot-and-swing-back.
+  4. Delay compensation. The camera is steered by where the subject is seen,
+     corrected for moves already sent but not yet on video (a Smith
+     predictor), which stops the overshoot-and-swing-back. It doesn't try to
+     predict where the subject is going: the camera starts when they do, runs
+     at the pace they are measured to be walking, and aims only slightly
+     ahead (LEAD). When they stop it always centres them (RECENTRE_*).
   5. Situations. Still / walking / fast, with hysteresis, each with its own
      dead zone, responsiveness and speed cap; a still speaker gets a calm,
      locked-off shot, a walking one gets matched pace.
   6. Hunting guard. If the camera reverses direction repeatedly it softens
      itself, and recovers once things are calm.
+  7. Zoom (ZoomPilot). Frames first, zooms once the subject settles; eases
+     in proportionally, stops early for the delay, learns the zoom rate.
 
 Pure Python + numpy (cv2 only for EgoMotion), so it is fully testable in
 simulation — see tests/test_autopilot.py.
@@ -207,7 +212,7 @@ class LoopModel:
 # delay (see tests/test_autopilot.py for the comparison against manual).
 SITUATIONS = {
     "still":   dict(dead=0.12, settle=0.04, k=0.9, ff=0.0, vmax=0.25, accel=0.18),
-    "walking": dict(dead=0.06, settle=0.03, k=1.3, ff=0.9, vmax=0.70, accel=0.36),
+    "walking": dict(dead=0.06, settle=0.03, k=1.3, ff=1.0, vmax=0.70, accel=0.36),
     "fast":    dict(dead=0.04, settle=0.02, k=1.8, ff=1.0, vmax=1.40, accel=0.78),
 }
 TILT_SCALE = dict(dead=1.3, k=0.7, ff=0.5, vmax=0.5)   # people rarely move vertically
@@ -218,19 +223,25 @@ STYLES = {
     "responsive": dict(speed=1.35, dead=0.8),
 }
 
-WALK_ENTER, WALK_LEAVE = 0.07, 0.035   # subject speed, frame widths / s
+WALK_ENTER, WALK_LEAVE = 0.06, 0.03   # subject speed, frame widths / s
 FAST_ENTER, FAST_LEAVE = 0.40, 0.25
 LEAVE_AFTER            = 0.8           # s below a threshold before stepping down
 BRAKE                  = 2.5           # braking may be this much harder than accelerating
 EDGE                   = 0.32          # |error| past this: catch up at "fast" limits...
 EDGE_ACCEL             = 1.5           # ...accelerating up to this hard
-CATCH_UP, CATCH_UP_REL  = 0.03, 0.20    # max gap-closing speed while following
+CATCH_UP, CATCH_UP_REL = 0.004, 0.03   # fw/s (+ fraction of his pace) the camera may exceed his speed by to close a gap
 LAT_REF, LAT_SCALE_MAX = 0.40, 2.0     # delay the limits were tuned at; most they scale up for more
 W_MAX                  = 0.75          # fastest believable subject, frame widths / s
 W_FRESH, FRESH_SPAN    = 0.35, 0.5     # until VEL fit spans FRESH_SPAN s after a reset, |w| <= W_FRESH
+LEAD                   = 0.35          # fraction of (his speed x video delay) aimed ahead of him: a slight look-ahead
+LEAD_MAX               = 0.05          # ...and never more than this far (frame fraction)
+RECENTRE_DEAD          = 0.035         # once he has stopped, centre him if he is this far off...
+RECENTRE_SETTLE        = 0.015         # ...and stop when within this (frame fraction)
+RECENTRE_TIME          = 8.0           # s to keep trying after he stops before giving up (camera at its limit)
 REVERSE_HOLD           = 2.0           # s after a move during which...
 REVERSE_DEAD           = 0.20          # ...reversing needs this much error
 STEP_HOLD              = 0.8           # VISCA steps of change needed to switch step
+COAST_HOLD             = 0.2           # s a missed detection keeps the camera at its speed
 
 
 class _Axis:
@@ -249,6 +260,8 @@ class _Axis:
         self.b_ego  = 0.0     # latest background velocity (for diagnostics)
         self.last_side   = 0
         self.last_side_t = -1e9
+        self.recentre    = False  # he has been on the move: centre him once he stops
+        self.still_t     = None   # when he stopped
 
     def reset(self):
         self.__init__(self.axis)
@@ -296,10 +309,174 @@ class _Axis:
             self.w = max(-lim, min(lim, 0.5 * self.w + 0.5 * (num / den)))
 
 
+# ─────────────────────────────────────────────────────────────
+# Zoom
+# ─────────────────────────────────────────────────────────────
+
+ZOOM_RATE_PRIOR  = 0.06    # ln(fill) per second per (VISCA zoom speed + 1); learned live
+ZOOM_RATE_RANGE  = (0.01, 0.4)
+ZOOM_SETTLE      = 0.35    # stop within this fraction of the dead band from the target
+ZOOM_TIME        = 2.0     # s a zoom aims to take to close the gap (it slows as it nears)
+ZOOM_IN_STILL    = 1.0     # s the subject must be settled and centred before zooming in
+ZOOM_IN_CENTRE   = 0.12    # ...within this of centre (frame fraction)
+ZOOM_OUT_AFTER   = 0.3     # s too big before zooming out
+ZOOM_COOLDOWN    = 1.5     # s after a zoom before the next one
+ZOOM_SPEED_HOLD  = 0.4     # s between zoom speed changes
+ZOOM_FAST_WIDEN  = 0.8     # a fast-moving subject gets a wider target
+ZOOM_LIMIT_AFTER = 1.2     # s (after latency) with little change in size = camera at its zoom limit
+ZOOM_PROGRESS    = 1.2     # s window the zoom's progress is measured over
+ZOOM_LIMIT_HOLD  = 15.0    # s before trying that direction again
+FILL_SMOOTH      = 0.4     # s time constant of the size reading
+
+
+class ZoomPilot:
+    """
+    Auto mode's zoom. The manual zoom runs at one fixed speed until the size
+    crosses a band edge; with ~0.4 s of video delay that always overshoots,
+    and it zooms whenever the size reading twitches. Here, in log units of
+    the subject's size (so zooming 2× is the same step at any focal length):
+
+      * Zoom in only once the subject has settled, centred, with the camera
+        still — never chase a walking subject with zoom. Zoom out promptly
+        when they're too big, and aim wider while they move fast.
+      * Speed proportional to the distance from target, so it eases in.
+      * Stop early by what the delay will still add (measured rate × latency).
+      * Learn how fast this camera zooms per speed step, live.
+      * Notice the end of the zoom range and stop asking for more.
+    """
+
+    def __init__(self, rate=ZOOM_RATE_PRIOR):
+        self.rate = rate
+        self._learned = 0        # rate observations so far (learn fast at first)
+        self.reset()
+
+    def reset(self):
+        """Forget the subject (keeps the learned zoom rate)."""
+        self.dir = 0
+        self.speed = 0
+        self.f = None            # smoothed ln(fill)
+        self._f_t = None
+        self._hist = deque()     # (t, ln fill) for the rate of change
+        self._started = None
+        self._speed_t = -1e9
+        self._stopped = -1e9
+        self._in_since = None
+        self._out_since = None
+        self._limit = {1: -1e9, -1: -1e9}
+
+    def _observe(self, now, fill):
+        lf = math.log(max(1e-3, fill))
+        if self.f is None or now - self._f_t > 1.0:
+            self.f = lf
+        else:
+            a = 1.0 - math.exp(-(now - self._f_t) / FILL_SMOOTH)
+            self.f += a * (lf - self.f)
+        self._f_t = now
+        self._hist.append((now, lf))
+        while self._hist and self._hist[0][0] < now - ZOOM_PROGRESS:
+            self._hist.popleft()
+
+    def measured_rate(self, since=None):
+        """d ln(fill) / dt over the last ZOOM_PROGRESS s, or since `since` (+ = growing = zooming in)."""
+        h = [x for x in self._hist if since is None or x[0] >= since]
+        if len(h) < 6 or h[-1][0] - h[0][0] < 0.5 * ZOOM_PROGRESS:
+            return None
+        n = len(h)
+        mt = sum(x[0] for x in h) / n
+        mf = sum(x[1] for x in h) / n
+        den = sum((x[0] - mt) ** 2 for x in h)
+        return sum((x[0] - mt) * (x[1] - mf) for x in h) / den if den > 0 else None
+
+    def _speed_for(self, gap, max_speed):
+        want = gap / ZOOM_TIME                     # ln units / s
+        return int(min(max_speed, max(0, round(want / self.rate) - 1)))
+
+    def step(self, now, fill, cx, situation, camera_moving, target, dead, max_speed,
+             latency, style=None):
+        """
+        One detection. fill = subject size (frame fraction); returns
+        (direction, speed): +1 zoom in, -1 zoom out, 0 stop; VISCA speed 0-7.
+        """
+        self._observe(now, fill)
+        dead_k = (style or {}).get("dead", 1.0)
+        if situation == "fast":
+            target *= ZOOM_FAST_WIDEN
+        e = self.f - math.log(target)
+        dead_ln = math.log(1.0 + dead / target) * dead_k
+        settle = ZOOM_SETTLE * dead_ln
+        L = latency
+        centred = abs(cx - 0.5) < ZOOM_IN_CENTRE
+        calm = situation == "still" and not camera_moving
+
+        if self.dir:
+            running = now - self._started
+            expected = self.rate * (self.speed + 1)      # ln units / s at this speed
+            # Where the size ends up if we stop now: what's in the pipe (the
+            # learned rate × latency and the size smoothing's lag; the
+            # measured rate is too noisy to stop on)
+            e_pred = e + self.dir * expected * (L + FILL_SMOOTH)
+            if self.dir > 0:
+                done = e_pred >= -settle
+                # Small pan corrections while zooming in are fine (zooming
+                # magnifies any offset); the subject moving off isn't.
+                abort = situation != "still" or abs(cx - 0.5) > 1.5 * ZOOM_IN_CENTRE
+            else:
+                done = e_pred <= settle
+                abort = False
+            # Progress since the zoom (or this speed) has had time to show on video
+            r = self.measured_rate(since=self._started + L + 0.2)
+            stuck = (running > L + ZOOM_LIMIT_AFTER and r is not None
+                     and r * self.dir < 0.25 * self.rate)
+            if stuck:
+                self._limit[self.dir] = now
+            if done or abort or stuck:
+                return self.stop(now)
+            r = self.measured_rate(since=self._speed_t + L + 0.2)
+            if r is not None and r * self.dir > 0:          # learn this camera's zoom rate
+                obs = min(ZOOM_RATE_RANGE[1], max(ZOOM_RATE_RANGE[0], abs(r) / (self.speed + 1)))
+                a = max(0.05, 0.3 / (1 + self._learned / 10))
+                self.rate += a * (obs - self.rate)
+                self._learned += 1
+            sp = self._speed_for(max(0.0, abs(e_pred) - settle), max_speed)
+            if sp != self.speed and now - self._speed_t >= ZOOM_SPEED_HOLD:
+                self.speed, self._speed_t = sp, now
+            return self.dir, self.speed
+
+        # Idle
+        self._out_since = (self._out_since or now) if e > dead_ln else None
+        self._in_since = (self._in_since or now) if (e < -dead_ln and calm and centred) else None
+        if now - self._stopped < ZOOM_COOLDOWN:
+            return 0, 0
+        if self._out_since and now - self._out_since >= ZOOM_OUT_AFTER \
+                and now - self._limit[-1] > ZOOM_LIMIT_HOLD:
+            return self._start(now, -1, abs(e) - settle, max_speed)
+        if self._in_since and now - self._in_since >= ZOOM_IN_STILL \
+                and now - self._limit[1] > ZOOM_LIMIT_HOLD:
+            return self._start(now, 1, abs(e) - settle, max_speed)
+        return 0, 0
+
+    def _start(self, now, d, gap, max_speed):
+        self.dir, self.speed = d, self._speed_for(gap, max_speed)
+        self._started = self._speed_t = now
+        self._in_since = self._out_since = None
+        return self.dir, self.speed
+
+    def stop(self, now):
+        """Zoom stopped (by us or by something else: preset, lost subject)."""
+        self.dir, self.speed = 0, 0
+        self._stopped = now
+        return 0, 0
+
+    def view(self):
+        return {"zoom_rate": round(self.rate, 4), "zoom_dir": self.dir, "zoom_speed": self.speed,
+                "fill": round(math.exp(self.f), 3) if self.f is not None else None}
+
+
 class AutoPilot:
-    def __init__(self, gain_pan=0.10, gain_tilt=0.10, latency=0.35):
+    def __init__(self, gain_pan=0.10, gain_tilt=0.10, latency=0.35, zoom_rate=ZOOM_RATE_PRIOR):
         self.model     = LoopModel(gain_pan, gain_tilt, latency)
         self.axes      = [_Axis(0), _Axis(1)]
+        self.zoom      = ZoomPilot(zoom_rate)
         self.situation = "still"
         self._below_t  = None
         self._last_t   = None
@@ -308,6 +485,7 @@ class AutoPilot:
         self._last_dir = 0
         self._zoom_h0  = None
         self._zoom_check = None
+        self._gap_t    = None        # when the current run of missed detections began
 
     # ── Inputs ────────────────────────────────────────────────
 
@@ -315,7 +493,9 @@ class AutoPilot:
         for a in self.axes:
             a.reset()
         self.situation, self._below_t, self._last_t = "still", None, None
+        self._gap_t = None
         self._reversals.clear()
+        self.zoom.reset()
 
     def on_command(self, now, pan, tilt):
         self.model.on_command(now, pan, tilt)
@@ -350,15 +530,18 @@ class AutoPilot:
 
     # ── Control ───────────────────────────────────────────────
 
-    def step(self, now, cx, cy, h, style="balanced", max_step=(24, 24), adapt=True):
+    def step(self, now, cx, cy, h, style="balanced", max_step=(24, 24), adapt=True, recentre=True):
         """
         One detection. Returns (pan, tilt) VISCA speeds (pan + = left), never
         faster than max_step (the profile's Fast speeds) per axis. adapt=False
         turns off following harder for a longer measured delay and the
         predicted-position edge check (Settings → "Adapt to video delay").
+        recentre=False leaves a speaker who has stopped wherever they are
+        inside the calm dead zone (Settings → "Centre after moving").
         """
         dt = min(0.25, max(1e-3, now - self._last_t)) if self._last_t else None
         self._last_t = now
+        self._gap_t = None
         st = STYLES.get(style, STYLES["balanced"])
 
         if self._zoom_check and now >= self._zoom_check and self._zoom_h0:
@@ -368,18 +551,31 @@ class AutoPilot:
         for a, x in zip(self.axes, (cx, cy)):
             a.observe(now, x)
         self._classify(now, abs(self.axes[0].w))
+        for a in self.axes:
+            if self.situation != "still" and abs(a.w) >= WALK_LEAVE:
+                a.recentre, a.still_t = True, None
+            elif a.recentre and a.still_t is None:
+                a.still_t = now          # he has stopped
         self._guard(now, dt or 0.0)
         if dt is None:
             return self.output()
 
         L = min(0.9, max(0.08, self.model.latency))
-        return tuple(self._axis(a, x, L, dt, st, now, m, adapt)
+        return tuple(self._axis(a, x, L, dt, st, now, m, adapt, recentre)
                      for a, x, m in zip(self.axes, (cx, cy), max_step))
 
     def coast(self, now):
-        """No detection this frame: ease the camera off."""
+        """
+        No detection this frame. A dropped frame or two (a turn, a gesture
+        across the torso) doesn't mean the speaker stopped, so the camera
+        keeps its speed for COAST_HOLD s, then eases off.
+        """
         dt = min(0.25, max(1e-3, now - self._last_t)) if self._last_t else 0.04
         self._last_t = now
+        if self._gap_t is None:
+            self._gap_t = now
+        if now - self._gap_t < COAST_HOLD:
+            return self.output()
         for a in self.axes:
             p = self._params(a)
             a.b_cmd = _approach(a.b_cmd, 0.0, p["accel"] * BRAKE * dt)
@@ -403,17 +599,34 @@ class AutoPilot:
         p["k"] *= self.soften; p["accel"] *= self.soften
         return p
 
-    def _axis(self, a, x, L, dt, style, now, max_step=24, adapt=True):
+    def _axis(self, a, x, L, dt, style, now, max_step=24, adapt=True, recentre=True):
         p = self._params(a, style)
-        lead = min(1.0, abs(a.w) / WALK_ENTER)            # no lead for jitter
-        x_pred = x + a.w * L * lead + self.model.commanded_shift(now, a.axis, L)
+        gate = min(1.0, abs(a.w) / WALK_ENTER)            # no lead for jitter
+        shift = self.model.commanded_shift(now, a.axis, L)
+        # Where the camera aims: only slightly ahead of him
+        x_pred = x + max(-LEAD_MAX, min(LEAD_MAX, LEAD * a.w * L * gate)) + shift
         e = x_pred - 0.5
+        # Where he will really be once the video delay has played out: only
+        # used to see that he is about to leave the picture, never to aim
+        e_edge = x + a.w * L * gate + shift - 0.5
         # The longer the measured video delay, the further behind the picture
         # the camera is, so a moving subject is followed with proportionally
         # harder acceleration and catch-up (1x at LAT_REF, up to LAT_SCALE_MAX).
         lat = min(LAT_SCALE_MAX, max(1.0, L / LAT_REF)) if adapt else 1.0
         edge_k = 1.0 if a.axis == 0 else TILT_SCALE["dead"]
         side = (e > 0) - (e < 0)
+
+        # He has stopped after being on the move: centre him properly. A
+        # speaker who only sways keeps the wide, calm dead zone; one who just
+        # walked somewhere doesn't get left off to the side of it.
+        tight = recentre and a.recentre and a.still_t is not None
+        if tight:
+            if now - a.still_t > RECENTRE_TIME:
+                a.recentre = tight = False
+            else:
+                sc = style["dead"] * (TILT_SCALE["dead"] if a.axis else 1.0)
+                p["dead"] = min(p["dead"], RECENTRE_DEAD * sc)
+                p["settle"] = min(p["settle"], RECENTRE_SETTLE * sc)
 
         # Swinging back the other way right after a move needs a much bigger
         # error: when the subject stops, ~0.5 s of motion is already in the
@@ -429,6 +642,8 @@ class AutoPilot:
             a.active = 0
         if a.active:
             a.last_side, a.last_side_t = a.active, now
+        elif tight and abs(e) < p["settle"]:
+            a.recentre = False                            # centred: back to the calm hold
 
         vmax, accel = p["vmax"], p["accel"]
         if self.situation != "still":
@@ -437,17 +652,21 @@ class AutoPilot:
         # out, not where the delayed picture shows them: with ~0.65 s of delay,
         # by the time the picture showed a fast walker near the edge they were
         # already half out of it.
-        if max(abs(x - 0.5), abs(e) if adapt else 0.0) > EDGE * edge_k:
+        if max(abs(x - 0.5), abs(e_edge) if adapt else 0.0) > EDGE * edge_k:
             # About to lose them off the edge: catch up at "fast" limits
             f = SITUATIONS["fast"]
             tilt = TILT_SCALE["vmax"] if a.axis else 1.0
             vmax  = max(vmax,  f["vmax"] * style["speed"] * tilt)
             accel = max(accel, EDGE_ACCEL * style["speed"] * tilt * lat)
         fb = -p["k"] * e if a.active else 0.0
-        if self.situation != "still":
-            # Close the gap gently on top of matching the subject's pace.
-            # Unlimited catch-up ran the camera at twice a walker's speed and
-            # carried it past them when they stopped.
+        if tight and a.active:
+            # A small error asks for less than one speed step; give it one so the move happens
+            fb = -a.active * max(abs(fb), 0.8 * self.model.gain[a.axis])
+        if self.situation != "still" and not tight:
+            # Match his pace and nothing more. Closing the gap faster than that
+            # ran the camera ahead of the walker and carried it past them when
+            # they stopped; the gap closes when he slows or stops. (A longer
+            # measured video delay allows a proportionally bigger gap-closing.)
             catch = (CATCH_UP + CATCH_UP_REL * abs(a.w)) * lat
             fb = max(-catch, min(catch, fb))
         ff = -p["ff"] * a.w if self.situation != "still" else 0.0
@@ -524,6 +743,7 @@ class AutoPilot:
             "latency":   round(m.latency, 3),
             "fit_r2":    m.r2,
             "soften":    round(self.soften, 2),
+            **self.zoom.view(),
         }
 
 

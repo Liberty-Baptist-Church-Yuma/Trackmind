@@ -13,6 +13,7 @@ Run: python autotrack.py            (app window)
      python autotrack.py --browser  (open the UI in a web browser)
 """
 
+import select
 import socket
 import time
 import threading
@@ -39,7 +40,7 @@ except ImportError:
 import numpy as np
 
 from diagnostics import DiagnosticsLog, NULL_DIAG
-from autopilot import AutoPilot, EgoMotion, STYLES as AUTO_STYLES
+from autopilot import AutoPilot, EgoMotion, STYLES as AUTO_STYLES, ZOOM_RATE_RANGE
 
 
 def _read_version():
@@ -103,9 +104,13 @@ class Settings:
         # where the speaker will be rather than where the delayed picture
         # shows them. Per profile, on by default.
         self.auto_delay_adapt = True
+        # When the speaker stops after moving, centre them (rather than leave
+        # them anywhere inside the calm dead zone). Per profile, on by default.
+        self.auto_recentre  = True
         self.auto_gain_pan  = 0.10
         self.auto_gain_tilt = 0.10
         self.auto_latency   = 0.35
+        self.auto_zoom_rate = 0.06         # ln(size)/s per zoom speed step, learned
 
         self.track_focus  = 'upper'
         self.track_offset = 2
@@ -185,10 +190,12 @@ class Settings:
             "auto_mode":      self.auto_mode,
             "auto_style":     self.auto_style,
             "auto_delay_adapt": self.auto_delay_adapt,
+            "auto_recentre":    self.auto_recentre,
             "lock_size_check":  self.lock_size_check,
             "auto_gain_pan":  self.auto_gain_pan,
             "auto_gain_tilt": self.auto_gain_tilt,
             "auto_latency":   self.auto_latency,
+            "auto_zoom_rate": self.auto_zoom_rate,
             "pose_engine":    self.pose_engine,
             "anchor_enabled": self.anchor_enabled,
             "anchor_preset":  self.anchor_preset,
@@ -240,7 +247,8 @@ class Settings:
             "latency_comp": self.latency_comp, "lost_timeout": self.lost_timeout,
             "track_offset": self.track_offset,
             "auto_mode": self.auto_mode, "auto_style": self.auto_style,
-            "auto_delay_adapt": self.auto_delay_adapt, "lock_size_check": self.lock_size_check,
+            "auto_delay_adapt": self.auto_delay_adapt, "auto_recentre": self.auto_recentre,
+            "lock_size_check": self.lock_size_check,
             "anchor_enabled": self.anchor_enabled, "anchor_preset": self.anchor_preset,
             "anchor_range": self.anchor_range, "anchor_dwell": self.anchor_dwell,
             "anchor_hold": self.anchor_hold, "anchor_hold_top": self.anchor_hold_top,
@@ -540,7 +548,8 @@ class Updater:
 class VISCAController:
     def __init__(self):
         self._sock       = None
-        self._lock       = threading.Lock()
+        self._lock       = threading.Lock()     # sends and (re)connecting
+        self._query_lock = threading.Lock()     # one position query at a time
         self._connected  = False
 
     @property
@@ -642,25 +651,32 @@ class VISCAController:
         VISCA Pan-tiltPosInq: 8x 09 06 12 FF → y0 50 0p 0p 0p 0p 0t 0t 0t 0t FF
         (signed 16-bit, one nibble per byte). Also drains the ACK/completion
         replies that ordinary commands leave queued on the socket.
+
+        Only the send takes the command lock: waiting for the reply used to
+        hold it for up to `timeout`, and every pan/tilt command the tracker
+        sent meanwhile — so the whole tracking loop — waited with it. Reads
+        use select() so the socket's blocking mode, which concurrent sends
+        rely on, is never changed.
         """
-        with self._lock:
-            if not self._connected and not self.connect():
-                return None
-            s = self._sock
+        with self._query_lock:
+            with self._lock:
+                if not self._connected and not self.connect():
+                    return None
+                s = self._sock
             try:
-                s.setblocking(False)
-                try:
-                    while True:
-                        if not s.recv(4096):
-                            raise ConnectionError("camera closed the VISCA socket")
-                except (BlockingIOError, InterruptedError):
-                    pass
-                s.settimeout(timeout)
-                s.sendall(bytes([0x81, 0x09, 0x06, 0x12, 0xFF]))
+                while select.select([s], [], [], 0)[0]:
+                    if not s.recv(4096):
+                        raise ConnectionError("camera closed the VISCA socket")
+                with self._lock:
+                    if s is not self._sock:
+                        return None          # reconnected meanwhile
+                    s.sendall(bytes([0x81, 0x09, 0x06, 0x12, 0xFF]))
                 buf = b""
                 deadline = time.monotonic() + timeout
-                while time.monotonic() < deadline:
-                    s.settimeout(max(0.01, deadline - time.monotonic()))
+                while True:
+                    left = deadline - time.monotonic()
+                    if left <= 0 or not select.select([s], [], [], left)[0]:
+                        return None
                     chunk = s.recv(256)
                     if not chunk:
                         raise ConnectionError("camera closed the VISCA socket")
@@ -671,20 +687,14 @@ class VISCAController:
                             n = lambda b: ((b[0] & 0xF) << 12) | ((b[1] & 0xF) << 8) | ((b[2] & 0xF) << 4) | (b[3] & 0xF)
                             signed = lambda v: v - 0x10000 if v & 0x8000 else v
                             return signed(n(msg[2:6])), signed(n(msg[6:10]))
-                return None
-            except socket.timeout:
-                return None
-            except OSError as e:
+            except (OSError, ValueError) as e:
                 print(f"[VISCA] Position query failed: {e}")
-                self._connected = False
-                try: s.close()
-                except Exception: pass
+                with self._lock:
+                    if s is self._sock:
+                        self._connected = False
+                        try: s.close()
+                        except Exception: pass
                 return None
-            finally:
-                try:
-                    if self._connected: s.settimeout(2.0)
-                except Exception:
-                    pass
 
     def set_motion_sync(self, on: bool):
         """
@@ -792,6 +802,7 @@ class PersonDetector:
         self._lock_seen  = 0.0
         self._lock_vx    = 0.0    # subject velocity in frame fractions / s,
         self._lock_vy    = 0.0    # so a fast exit is searched where it went
+        self._aspect     = 16 / 9 # frame width / height, for torso length
 
     def _ensure_cpu(self):
         if self.pose is None:
@@ -850,7 +861,29 @@ class PersonDetector:
     FULL_LANDMARKS  = [0, 11, 12, 23, 24, 25, 26]  # upper + knees
     LOWER_LANDMARKS = [23, 24, 25, 26, 27, 28]     # hips, knees, ankles
 
-    def _landmarks_to_bbox(self, lms):
+    # Size for zoom, from the torso: the focus box's height shrinks by a third
+    # the moment knees or hips leave the picture, so a zoom-in kept going.
+    # Focus-box height per torso length (shoulder to hip midpoint), measured
+    # on COCO photos of standing people, so the zoom target keeps its meaning.
+    FOCUS_PER_TORSO = {"upper": 1.75, "full": 2.55, "lower": 2.0}
+    NECK_PER_TORSO  = 0.39      # nose → shoulder midpoint, when the hips are out of view
+
+    def _torso_fill(self, lms, aspect):
+        """Focus-box-equivalent height (frame fraction) from the torso, or None."""
+        vis = lambda i: lms[i].visibility > 0.4
+        if not (vis(11) and vis(12)):
+            return None
+        mid = lambda a, b: ((lms[a].x + lms[b].x) / 2 * aspect, (lms[a].y + lms[b].y) / 2)
+        sh = mid(11, 12)
+        if vis(23) and vis(24):
+            torso = math.dist(sh, mid(23, 24))
+        elif vis(0):
+            torso = math.dist(sh, (lms[0].x * aspect, lms[0].y)) / self.NECK_PER_TORSO
+        else:
+            return None
+        return torso * self.FOCUS_PER_TORSO.get(SETTINGS.track_focus, 1.75) if torso > 0 else None
+
+    def _landmarks_to_bbox(self, lms, aspect=None):
         focus  = SETTINGS.track_focus
         offset = SETTINGS.track_offset  # -5 to +5, negative = higher, positive = lower
 
@@ -897,7 +930,8 @@ class PersonDetector:
         cy += (offset / 7.0) * h * 0.7
         cy = max(0.0, min(1.0, cy))
 
-        return cx, cy, x1 - x0, y1 - y0
+        fill = self._torso_fill(lms, aspect or self._aspect)
+        return cx, cy, x1 - x0, y1 - y0, (fill if fill is not None else y1 - y0)
 
     def detect(self, frame_rgb=None, hard_lock=False, frame_bgr=None):
         """
@@ -917,6 +951,8 @@ class PersonDetector:
         image the model sees.
         """
         now = time.monotonic()
+        f = frame_bgr if frame_bgr is not None else frame_rgb
+        self._aspect = f.shape[1] / f.shape[0]
         if self.gpu is not None:
             bgr = frame_bgr if frame_bgr is not None else cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             try:
@@ -1035,12 +1071,13 @@ class PersonDetector:
         results = pose.process(crop)
         if not results.pose_landmarks:
             return None
-        bbox = self._landmarks_to_bbox(results.pose_landmarks.landmark)
+        H = frame_rgb.shape[0]
+        bbox = self._landmarks_to_bbox(results.pose_landmarks.landmark, aspect=(b - a) / H)
         if bbox is None:
             return None
-        cx, cy, w, h = bbox
+        cx, cy, w, h, fill = bbox
         k = (b - a) / W
-        return a / W + cx * k, cy, w * k, h
+        return a / W + cx * k, cy, w * k, h, fill
 
     def release_lock(self):
         self._locked_cx = None
@@ -1117,10 +1154,13 @@ class AutoTracker:
         self._f_cx         = OneEuroFilter()
         self._f_cy         = OneEuroFilter()
         self._f_h          = OneEuroFilter(min_cutoff=0.5, beta=1.0)
+        self._f_fill       = OneEuroFilter(min_cutoff=0.5, beta=1.0)
         self._last_det_t   = None
         self.fps           = 0.0     # set by the tracker thread, for diagnostics
         s = SETTINGS
-        self.pilot         = AutoPilot(s.auto_gain_pan, s.auto_gain_tilt, s.auto_latency)
+        self.pilot         = AutoPilot(s.auto_gain_pan, s.auto_gain_tilt, s.auto_latency,
+                                       min(ZOOM_RATE_RANGE[1], max(ZOOM_RATE_RANGE[0], s.auto_zoom_rate)))
+        self._zoom_speed   = 0       # VISCA speed of the zoom in progress (auto zoom)
         self._pilot_fits   = 0
         self._pending_reset = None   # "full" / "filters", set from other threads
         self._last_cmd_t   = 0.0
@@ -1322,13 +1362,15 @@ class AutoTracker:
         s   = SETTINGS
         self._at_home = False
 
-        cx, cy, bbox_w, bbox_h = detection
+        cx, cy, bbox_w, bbox_h = detection[:4]
+        fill   = detection[4] if len(detection) > 4 else bbox_h
         raw_cx, raw_cy = cx, cy
         fdt = (now - self._last_det_t) if self._last_det_t else 0.04
         self._last_det_t = now
         cx     = self._f_cx(cx, fdt)
         cy     = self._f_cy(cy, fdt)
         bbox_h = self._f_h(bbox_h, fdt)
+        fill   = self._f_fill(fill, fdt)
 
         if self._anchor(now, cx, cy - bbox_h / 2):
             # Holding the pulpit shot: the preset owns pan, tilt and zoom
@@ -1340,11 +1382,11 @@ class AutoTracker:
             self._last_seen = self._last_motion_t = now
             self._pan_cmd, self._tilt_cmd = self.pilot.step(now, cx, cy, bbox_h, s.auto_style,
                                                             (s.pan_fast, s.tilt_fast),
-                                                            adapt=s.auto_delay_adapt)
+                                                            adapt=s.auto_delay_adapt, recentre=s.auto_recentre)
             self._vx = self.pilot.axes[0].w      # the anchor's "settled" check reads this
             self._send_move(now)
             self._sample((raw_cx, raw_cy, cx, cy, bbox_h, cx), now)
-            self._zoom(s, bbox_h, now)
+            self._auto_zoom(s, fill, cx, now)
             return
 
         # Velocity prediction
@@ -1382,13 +1424,12 @@ class AutoTracker:
         self._tilt_cmd = self._slew(self._tilt_cmd, tilt_target, dt_motion)
         self._send_move(now)
         self._sample((raw_cx, raw_cy, cx, cy, bbox_h, pred_cx), now)
-        self._zoom(s, bbox_h, now)
+        self._zoom(s, fill, now)
 
-    def _zoom(self, s, bbox_h, now):
+    def _zoom(self, s, fill, now):
         # Zoom — once started, keep going until the fill is near the target
         # rather than stopping at the band edge (same hunting fix as pan/tilt).
         if s.zoom_enabled:
-            fill   = bbox_h
             settle = s.zoom_dead * 0.4
             if self._prev_zoom == 1 and fill < s.zoom_target - settle:
                 zoom_dir = 1
@@ -1414,6 +1455,35 @@ class AutoTracker:
             if self._prev_zoom != 0:
                 self.visca.zoom_stop()
                 self._prev_zoom = 0
+
+    def _auto_zoom(self, s, fill, cx, now):
+        """Auto mode's zoom (autopilot.ZoomPilot): settled-only zoom-in, eased, delay-aware."""
+        z = self.pilot.zoom
+        if not s.zoom_enabled:
+            if self._prev_zoom != 0:
+                self.visca.zoom_stop()
+                self._prev_zoom = 0
+            z.reset()
+            return
+        if z.dir and self._prev_zoom == 0:
+            z.stop(now)          # stopped elsewhere (pulpit snap, lost subject, reset)
+        moving = self._prev_pan != 0 or self._prev_tilt != 0
+        d, speed = z.step(now, fill, cx, self.pilot.situation, moving, s.zoom_target,
+                          s.zoom_dead, s.zoom_speed, self.pilot.model.latency,
+                          AUTO_STYLES.get(s.auto_style))
+        if d != self._prev_zoom or (d and speed != self._zoom_speed):
+            if d != self._prev_zoom:
+                self.diag.event("zoom", dir=d, fill=fill, speed=speed, auto=1)
+                self.pilot.on_zoom(now, d, fill)
+            if d == 1:
+                self.visca.zoom_in(speed=speed)
+            elif d == -1:
+                self.visca.zoom_out(speed=speed)
+            else:
+                self.visca.zoom_stop()
+            self._prev_zoom, self._zoom_speed = d, speed
+        if abs(z.rate - s.auto_zoom_rate) > 0.002:
+            s.auto_zoom_rate = round(z.rate, 4)
 
     def _handle_lost(self):
         if self._prev_pan != 0 or self._prev_tilt != 0:
@@ -1473,12 +1543,16 @@ class AutoTracker:
             rec.update(auto=1, sit=p.situation, w=p.axes[0].w, b=p.axes[0].b_ego,
                        g=m.gain[0], gt=m.gain[1], L=m.latency, soft=p.soften,
                        pa=p.axes[0].active, ta=p.axes[1].active)
+            if SETTINGS.zoom_enabled:
+                z = p.zoom
+                rec.update(zs=self._zoom_speed, zr=z.rate,
+                           zf=math.exp(z.f) if z.f is not None else None)
         self.diag.sample(**rec)
 
     def _reset_filters(self):
         self.pilot.reset()
         self._pan_active = self._tilt_active = 0
-        self._f_cx.reset(); self._f_cy.reset(); self._f_h.reset()
+        self._f_cx.reset(); self._f_cy.reset(); self._f_h.reset(); self._f_fill.reset()
         self._last_det_t = None
 
 
@@ -1742,6 +1816,7 @@ SETTINGS_SCHEMA = {
     "lost_timeout":  _clamp_float(1.0, 10.0, 1),
     "auto_mode":     _as_bool,
     "auto_delay_adapt": _as_bool,
+    "auto_recentre":    _as_bool,
     "lock_size_check":  _as_bool,
     "pose_engine":   lambda v: str(v).strip().lower() if str(v).strip().lower() in ("auto", "gpu", "cpu") else "auto",
     "auto_style":    lambda v: str(v).strip().lower() if str(v).strip().lower() in AUTO_STYLES else "balanced",
@@ -2140,6 +2215,7 @@ class Controller:
             "lock_size_check": bool(SETTINGS.lock_size_check),
             "auto":          {"enabled": bool(SETTINGS.auto_mode), "style": SETTINGS.auto_style,
                               "delay_adapt": bool(SETTINGS.auto_delay_adapt),
+                              "recentre": bool(SETTINGS.auto_recentre),
                               **(self.tracker.pilot.view() if (self.tracker and tracking
                                                                and SETTINGS.auto_mode) else {})},
             "profile":       PROFILE_MANAGER.current,
