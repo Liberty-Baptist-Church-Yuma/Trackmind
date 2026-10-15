@@ -12,9 +12,9 @@ Auto camera tracking for church services: a Python app (pose detection → VISCA
   Say so when you skip it.
 - **New behaviour that changes how tracking acts is toggleable** in Settings.
 - **No co-author lines.** Never add `Co-Authored-By` or `Claude-Session` trailers; commits carry only the
-  owner's name. Commit as **LBCYuma2017** (the church's GitHub account; the repo now lives in the
-  Liberty-Baptist-Church-Yuma org). Older commits by `coder747-8i` are from before the move, when that account
-  owned the repo.
+  name of the person running the session. Commit as that user, with whatever `git config user.name` /
+  `user.email` is already set on the machine. Don't hard-code a username, and don't author a commit as someone
+  else. The repo lives in the Liberty-Baptist-Church-Yuma org, and more than one person commits to it.
 - Ask before pushing. A pushed `v*` tag builds and publishes a Release.
 
 ## Versions and releases
