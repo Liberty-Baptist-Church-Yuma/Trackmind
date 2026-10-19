@@ -22,7 +22,10 @@ walking one. Auto mode works in picture units instead and learns the rest:
      locked-off shot, a walking one gets matched pace.
   6. Hunting guard. If the camera reverses direction repeatedly it softens
      itself, and recovers once things are calm.
-  7. Glitch gate and reversal brake. A jump in the aim point that no walker
+  7. Gentle centring (optional). A speaker who is standing still but off
+     centre is eased back toward the middle, very slowly, so the aim dot tends
+     to sit on the centre without the camera ever chasing it.
+  8. Glitch gate and reversal brake. A jump in the aim point that no walker
      could make (an arm raise, a lean, a pose-model hiccup) is ignored until
      it has stayed put for half a second, so it can't fake a fast speaker; and
      a camera that is travelling fast always comes to a stop, and waits a
@@ -244,6 +247,13 @@ JUMP_START             = 0.25          # ...JUMP_START being how fast (frame wid
 JUMP_CONFIRM           = 0.5           # ...so it is ignored until it has stayed put this long (s)
 REVERSE_FAST           = 0.12          # reversing from faster than this (frame widths / s) brakes to a stop first...
 REVERSE_PAUSE          = 0.30          # ...and waits this long (s) at a standstill before heading the other way
+CENTRE_AFTER           = 1.5           # gentle centring: s a speaker must have been still before it starts
+CENTRE_DEAD            = 0.05          # ...only when the aim dot is further than this off centre (frame fraction; the calm zone leaves it alone)
+CENTRE_SPEED           = 0.02          # ...creeping at no more than this (frame widths / s), never below one VISCA step
+CENTRE_MAX_STEP        = 0.06          # ...and not at all if even one VISCA step moves the picture faster than this (too tight a shot to creep)
+CENTRE_STEADY          = 0.03          # ...and only once their position has been steady (moved less than this over the last 0.6 s), not just as they set off
+CENTRE_REST            = 2.5           # ...one pulse at a time, then rest this long (s) so the video can show the result before looking again
+CENTRE_MAX_RUN         = 4.0           # ...and no pulse lasts longer than this (s)
 
 
 class _Axis:
@@ -266,6 +276,9 @@ class _Axis:
         self.last_t  = None   # time of the previous raw detection
         self.cand    = None   # (t, position) a jump that hasn't been believed yet
         self.jumping = False  # a jump is being ignored right now
+        self.creeping  = 0    # gentle centring in progress, in this direction
+        self.creep_until = 0.0
+        self.creep_end   = -1e9
         self.heading   = 0    # direction the camera was last travelling fast
         self.heading_t = -1e9
 
@@ -526,6 +539,7 @@ class AutoPilot:
         self._last_dir = 0
         self._zoom_h0  = None
         self._zoom_check = None
+        self._still_since = None     # when the speaker last became "still"
 
     # ── Inputs ────────────────────────────────────────────────
 
@@ -533,6 +547,7 @@ class AutoPilot:
         for a in self.axes:
             a.reset()
         self.situation, self._below_t, self._last_t = "still", None, None
+        self._still_since = None
         self._reversals.clear()
         self.zoom.reset()
 
@@ -573,12 +588,14 @@ class AutoPilot:
 
     # ── Control ───────────────────────────────────────────────
 
-    def step(self, now, cx, cy, h, style="balanced", max_step=(24, 24), adapt=True):
+    def step(self, now, cx, cy, h, style="balanced", max_step=(24, 24), adapt=True, centre=False):
         """
         One detection. Returns (pan, tilt) VISCA speeds (pan + = left), never
         faster than max_step (the profile's Fast speeds) per axis. adapt=False
         turns off following harder for a longer measured delay and the
         predicted-position edge check (Settings → "Adapt to video delay").
+        centre=True lets a still, off-centre speaker be eased toward the
+        middle (Settings → "Gentle centring").
         """
         dt = min(0.25, max(1e-3, now - self._last_t)) if self._last_t else None
         self._last_t = now
@@ -591,12 +608,13 @@ class AutoPilot:
         for a, x in zip(self.axes, (cx, cy)):
             a.observe(now, x)
         self._classify(now, abs(self.axes[0].w))
+        self._still_since = (self._still_since or now) if self.situation == "still" else None
         self._guard(now, dt or 0.0)
         if dt is None:
             return self.output()
 
         L = min(0.9, max(0.08, self.model.latency))
-        return tuple(self._axis(a, x, L, dt, st, now, m, adapt)
+        return tuple(self._axis(a, x, L, dt, st, now, m, adapt, centre)
                      for a, x, m in zip(self.axes, (cx, cy), max_step))
 
     def coast(self, now):
@@ -604,6 +622,8 @@ class AutoPilot:
         dt = min(0.25, max(1e-3, now - self._last_t)) if self._last_t else 0.04
         self._last_t = now
         for a in self.axes:
+            if a.creeping:
+                continue          # a slow centring pulse rides through a missed frame (the tracker stops the camera after COAST_TIME)
             p = self._params(a)
             a.b_cmd = _approach(a.b_cmd, 0.0, p["accel"] * BRAKE * dt)
             a.active = 0
@@ -626,7 +646,7 @@ class AutoPilot:
         p["k"] *= self.soften; p["accel"] *= self.soften
         return p
 
-    def _axis(self, a, x, L, dt, style, now, max_step=24, adapt=True):
+    def _axis(self, a, x, L, dt, style, now, max_step=24, adapt=True, centre=False):
         p = self._params(a, style)
         lead = min(1.0, abs(a.w) / WALK_ENTER)            # no lead for jitter
         x_pred = x + a.w * L * lead + self.model.commanded_shift(now, a.axis, L)
@@ -652,6 +672,31 @@ class AutoPilot:
             a.active = 0
         if a.active:
             a.last_side, a.last_side_t = a.active, now
+
+        # Gentle centring: a speaker who has been still for a while and is only
+        # a little off centre (inside what the calm zone leaves alone) is eased
+        # toward the middle in one slow pulse: the camera runs at the slowest
+        # useful speed for exactly as long as the offset needs (from the
+        # learned gain), then rests until the video has shown the result.
+        # Chasing the offset on delayed video instead chops it into stop-starts.
+        # The normal correction above takes over beyond the calm zone, and
+        # following a walker never goes through here.
+        g = self.model.gain[a.axis]
+        creep_v = max(min(CENTRE_SPEED, 0.5 * abs(e)), 0.8 * g)
+        if (centre and not a.active and self.situation == "still" and 0 < 0.8 * g <= CENTRE_MAX_STEP
+                and self._still_since is not None and now - self._still_since >= CENTRE_AFTER):
+            k = TILT_SCALE["dead"] if a.axis else 1.0
+            if a.creeping and now >= a.creep_until:
+                a.creeping, a.creep_end = 0, now                      # pulse done: rest
+            elif (not a.creeping and abs(e) > CENTRE_DEAD * k and now - a.creep_end >= CENTRE_REST
+                  and len(a.hist) >= 4 and max(h[1] for h in a.hist) - min(h[1] for h in a.hist) < CENTRE_STEADY):
+                a.creeping = side
+                steps = max(1, round(creep_v / g))                    # what the quantizer will send
+                a.creep_until = now + min(CENTRE_MAX_RUN, abs(e) / (g * steps))
+        else:
+            if a.creeping:
+                a.creep_end = now
+            a.creeping = 0
 
         vmax, accel = p["vmax"], p["accel"]
         if self.situation != "still":
@@ -681,6 +726,8 @@ class AutoPilot:
         if g > 0:
             vmax = min(vmax, max_step * g)               # the profile's Fast speed is a hard limit
         b_des = max(-vmax, min(vmax, fb + ff))
+        if a.creeping:
+            b_des = -a.creeping * creep_v
 
         # Never swing straight from one direction to the other at speed: stop
         # first, and wait a moment. Turning round at a walking pace is still

@@ -104,6 +104,10 @@ class Settings:
         # where the speaker will be rather than where the delayed picture
         # shows them. Per profile, on by default.
         self.auto_delay_adapt = True
+        # A speaker who stands still a little off centre is eased toward the
+        # middle, slowly, so the aim dot tends to sit on the centre. Per
+        # profile, on by default.
+        self.auto_centre = True
         self.auto_gain_pan  = 0.10
         self.auto_gain_tilt = 0.10
         self.auto_latency   = 0.35
@@ -187,6 +191,7 @@ class Settings:
             "auto_mode":      self.auto_mode,
             "auto_style":     self.auto_style,
             "auto_delay_adapt": self.auto_delay_adapt,
+            "auto_centre":      self.auto_centre,
             "lock_size_check":  self.lock_size_check,
             "auto_gain_pan":  self.auto_gain_pan,
             "auto_gain_tilt": self.auto_gain_tilt,
@@ -243,7 +248,8 @@ class Settings:
             "latency_comp": self.latency_comp, "lost_timeout": self.lost_timeout,
             "track_offset": self.track_offset,
             "auto_mode": self.auto_mode, "auto_style": self.auto_style,
-            "auto_delay_adapt": self.auto_delay_adapt, "lock_size_check": self.lock_size_check,
+            "auto_delay_adapt": self.auto_delay_adapt, "auto_centre": self.auto_centre,
+            "lock_size_check": self.lock_size_check,
             "anchor_enabled": self.anchor_enabled, "anchor_preset": self.anchor_preset,
             "anchor_range": self.anchor_range, "anchor_dwell": self.anchor_dwell,
             "anchor_hold": self.anchor_hold, "anchor_hold_top": self.anchor_hold_top,
@@ -1394,7 +1400,7 @@ class AutoTracker:
             self._last_seen = self._last_motion_t = now
             self._pan_cmd, self._tilt_cmd = self.pilot.step(now, cx, cy, bbox_h, s.auto_style,
                                                             (s.pan_fast, s.tilt_fast),
-                                                            adapt=s.auto_delay_adapt)
+                                                            adapt=s.auto_delay_adapt, centre=s.auto_centre)
             self._vx = self.pilot.axes[0].w      # the anchor's "settled" check reads this
             self._send_move(now)
             self._sample((raw_cx, raw_cy, cx, cy, bbox_h, cx), now)
@@ -1828,6 +1834,7 @@ SETTINGS_SCHEMA = {
     "lost_timeout":  _clamp_float(1.0, 10.0, 1),
     "auto_mode":     _as_bool,
     "auto_delay_adapt": _as_bool,
+    "auto_centre":      _as_bool,
     "lock_size_check":  _as_bool,
     "pose_engine":   lambda v: str(v).strip().lower() if str(v).strip().lower() in ("auto", "gpu", "cpu") else "auto",
     "auto_style":    lambda v: str(v).strip().lower() if str(v).strip().lower() in AUTO_STYLES else "balanced",
@@ -2228,6 +2235,7 @@ class Controller:
             "lock_size_check": bool(SETTINGS.lock_size_check),
             "auto":          {"enabled": bool(SETTINGS.auto_mode), "style": SETTINGS.auto_style,
                               "delay_adapt": bool(SETTINGS.auto_delay_adapt),
+                              "centre": bool(SETTINGS.auto_centre),
                               **(self.tracker.pilot.view() if (self.tracker and tracking
                                                                and SETTINGS.auto_mode) else {})},
             "profile":       PROFILE_MANAGER.current,
