@@ -1188,12 +1188,20 @@ class AutoTracker:
         self._outside_since = None     # subject outside the hold zone since…
         self._anchor_cool   = 0.0      # no re-snap before this time
         self._anchor_mode   = "recall" # how the current snap is moving
+        # How far the picture has shifted (frame widths across, heights down)
+        # since the camera was last on the pulpit shot, from its own measured
+        # motion. The pulpit hold zone is fixed to the pulpit, so in the
+        # current picture it sits that far from where it is at the pulpit.
+        self._world         = [0.0, 0.0]
+        self._world_ok      = False    # False: not known (never on the pulpit this session, or zoomed since)
+        self._world_t       = None
 
     ANCHOR_UNITS  = 16     # camera position units per "Snap range" step (~1° on PTZOptics)
     ANCHOR_ARRIVE = 3      # units — close enough to call the snap finished
     ANCHOR_MIN    = {"recall": 1.2, "glide": 0.5}   # s before arrival can count (recall also zooms)
     ANCHOR_MAX    = {"recall": 3.0, "glide": 10.0}  # s — hold anyway if the camera never reports arrival
     ANCHOR_LEAVE  = 0.4    # s the subject must stay outside the hold zone to release
+    ANCHOR_ON_IT  = 0.7    # steps — this close to the learned position the camera is on the pulpit shot (shift = 0)
 
     def anchor_offset(self):
         """How far the camera is from the learned pulpit, in Snap-range steps."""
@@ -1219,6 +1227,7 @@ class AutoTracker:
             if elapsed < self.ANCHOR_MIN[mode] or (not arrived and elapsed < self.ANCHOR_MAX[mode]):
                 return True
             self.anchor_state, self._anchor_t = "held", now
+            self._world, self._world_ok = [0.0, 0.0], True
             self._outside_since = None
             # Velocity from frames where the camera itself was moving is junk
             self._vx = self._vy = 0.0
@@ -1226,6 +1235,7 @@ class AutoTracker:
             return True
 
         if self.anchor_state == "held":
+            self._world, self._world_ok = [0.0, 0.0], True     # the preset owns the camera: it is on the pulpit shot
             # The hold zone is a box: anchor_hold either side of centre, and
             # from the top of the frame down to anchor_hold_top. The head has
             # to stay in it — leaning and gestures don't, walking down off the
@@ -1244,8 +1254,15 @@ class AutoTracker:
 
         # free: snap once the camera has come to rest near the pulpit
         off  = self.anchor_offset()
+        if off is not None and off <= self.ANCHOR_ON_IT:
+            self._world, self._world_ok = [0.0, 0.0], True      # on the pulpit shot: nothing has shifted
         idle = self._prev_pan == 0 and self._prev_tilt == 0 and abs(self._vx) < 0.05
-        if off is None or off > s.anchor_range or not idle or now < self._anchor_cool:
+        # Only a speaker who is where the hold zone is gets the snap. Judged in the picture it
+        # would be anyone the camera has centred (a speaker who stepped down in front of the
+        # pulpit, with the camera tilted onto them, has their head in the picture's upper half
+        # too), and the camera would be pulled back up and the speaker let go again, over and over.
+        if (off is None or off > s.anchor_range or not idle or now < self._anchor_cool
+                or not self._in_pulpit_zone(cx, top)):
             self._still_since = None
             return False
         self._still_since = self._still_since or now
@@ -1339,16 +1356,34 @@ class AutoTracker:
             self._reset_filters()
 
     def observe_ego(self, now, bx, by, conf):
-        """Camera's own motion measured from the video (auto mode only)."""
+        """Camera's own motion measured from the video (Auto mode, or a learned pulpit anchor)."""
         self._apply_pending_reset()
         if self._prev_zoom != 0:
             conf = 0.0          # zooming scales the picture; not a pan/tilt shift
+            self._world_ok = False
+        self._track_world(now, bx, by, conf)
+        if not SETTINGS.auto_mode:
+            return
         self.pilot.on_ego(now, bx, by, conf)
         if self.pilot.model.fits != self._pilot_fits:
             self._pilot_fits = self.pilot.model.fits
             m = self.pilot.model
             SETTINGS.auto_gain_pan, SETTINGS.auto_gain_tilt = (round(g, 5) for g in m.gain)
             SETTINGS.auto_latency = round(m.latency, 3)
+
+    def _track_world(self, now, bx, by, conf):
+        """Add up how far the background has moved since the camera was on the pulpit shot."""
+        dt = None if self._world_t is None else now - self._world_t
+        self._world_t = now
+        if self._world_ok and conf >= 0.25 and dt is not None and 0 < dt <= 0.5:
+            self._world[0] += bx * dt
+            self._world[1] += by * dt
+
+    def _in_pulpit_zone(self, cx, top):
+        """Is the speaker where the hold zone is, judged at the pulpit shot rather than in this picture?"""
+        s = SETTINGS
+        sx, sy = self._world if self._world_ok else (0.0, 0.0)
+        return abs((cx - sx) - 0.5) <= s.anchor_hold and (top - sy) <= s.anchor_hold_top
 
     def process(self, detection):
         self._apply_pending_reset()
@@ -1539,6 +1574,7 @@ class AutoTracker:
         self._prev_pan = self._prev_tilt = self._prev_zoom = 0
         self.anchor_state = "free"
         self._still_since = self._outside_since = None
+        self._world, self._world_ok, self._world_t = [0.0, 0.0], False, None
         self._reset_filters()
         # Manual moves while paused weren't logged as commands: don't learn
         # from the first moment of motion after resuming.
@@ -1601,8 +1637,8 @@ class TrackerThread(threading.Thread):
 
     def _track_frame(self, frame, frame_t, detector, tracker, ego):
         tracker.fps = self.fps
-        if SETTINGS.auto_mode:
-            m = ego.update(frame, frame_t)
+        if SETTINGS.auto_mode or (SETTINGS.anchor_enabled and SETTINGS.anchor_pan is not None):
+            m = ego.update(frame, frame_t)       # Auto mode learns from it; the pulpit anchor tracks the picture shift with it
             if m:
                 tracker.observe_ego(frame_t, *m)
         else:

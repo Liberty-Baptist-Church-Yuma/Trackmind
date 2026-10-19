@@ -85,11 +85,13 @@ class Run:
 
 
 def simulate(autotrack, clock, visca, script, cam=Camera(), seconds=20.0, seed=0,
-             tracker=None, start_x=0.0, hidden=None):
+             tracker=None, start_x=0.0, hidden=None, on_frame=None):
     """
     script(t) -> subject angle in degrees (relative to the camera's start).
     hidden(t) -> True while the subject goes undetected (turned away, half out
     of frame) even though they're in the picture.
+    on_frame(tracker, cam_angle) is called just before each frame is processed
+    (e.g. to feed the pulpit anchor's camera position).
     Returns a Run. Pass `tracker` to continue a run with a warmed-up tracker.
     """
     rnd = random.Random(seed)
@@ -126,13 +128,16 @@ def simulate(autotrack, clock, visca, script, cam=Camera(), seconds=20.0, seed=0
                     pt, pca = prev_frame
                     dt = t - pt
                     b = -(ca - pca) / cam.fov / dt + rnd.gauss(0, cam.ego_noise)
-                    if autotrack.SETTINGS.auto_mode:
+                    S = autotrack.SETTINGS
+                    if S.auto_mode or (S.anchor_enabled and S.anchor_pan is not None):
                         tracker.observe_ego(clock.t, b, 0.0, 0.9)
                 prev_frame = (t, ca)
                 visible = (0.0 <= x_seen <= 1.0 and rnd.random() >= cam.miss_rate
                            and not (hidden and hidden(seen_t)))
                 det = ((x_seen + rnd.gauss(0, cam.pose_noise), 0.5, 0.15, 0.4)
                        if visible else None)
+                if on_frame:
+                    on_frame(tracker, cam_a)
                 tracker.process(det)
             run.t.append(t)
             run.x.append(0.5 + (script(t) - cam_a) / cam.fov)
