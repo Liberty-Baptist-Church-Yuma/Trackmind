@@ -60,3 +60,18 @@ def test_hold_top_setting_validates_and_is_per_profile():
     assert v(0.05) == 0.2 and v(1.5) == 1.0 and v(0.55) == 0.55
     assert "anchor_hold_top" in autotrack.Settings().to_dict()
     assert "anchor_hold_top" in autotrack.ProfileManager.ANCHOR_KEYS
+
+
+def test_vertical_aim_does_not_move_the_hold_zone(held, clock):
+    """The aim point sits low on the body (Vertical aim); the head is still at 0.20, inside the zone."""
+    for _ in range(20):
+        clock.advance(0.04)
+        held.process((0.55, 0.90, 0.15, 0.5, 0.5, 0.55, 0.45))     # aim 0.90, box middle 0.45
+    assert held.anchor_state == "held"
+
+
+def test_walking_down_still_releases_with_the_box_middle(held, clock):
+    for _ in range(20):
+        clock.advance(0.04)
+        held.process((0.5, 0.85, 0.15, 0.4, 0.4, 0.5, 0.85))       # box middle 0.85: head at 0.65
+    assert held.anchor_state == "free"

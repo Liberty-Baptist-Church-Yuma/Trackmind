@@ -1371,7 +1371,11 @@ class AutoTracker:
         bbox_h = self._f_h(bbox_h, fdt)
         fill   = self._f_fill(fill, fdt)
 
-        if self._anchor(now, cx, cy - bbox_h / 2):
+        # The head is the top of the speaker's box. Judge it from the box middle
+        # when the detection has one: the aim point (cy) slides down the body
+        # with Vertical aim, which would otherwise move the hold zone with it.
+        box_y = detection[6] if len(detection) > 6 else cy
+        if self._anchor(now, cx, box_y - bbox_h / 2):
             # Holding the pulpit shot: the preset owns pan, tilt and zoom
             self._last_seen     = now
             self._last_motion_t = now
