@@ -51,6 +51,7 @@
 			<div class="holdzone" id="holdzone"><span>Hold zone</span></div>
 			<div class="reticle" id="reticle">
 				<i></i><i></i><i></i><i></i>
+				<b class="reticle-dot" id="aimDot"></b>
 				<span class="reticle-tag" id="reticleTag">Subject</span>
 			</div>
 			<div class="hold-chip glass glass--clear" id="holdChip" data-glass data-refract="18" data-bezel="10" hidden>
@@ -337,6 +338,7 @@
 					</div>
 				</div>
 				<div class="row"><span>Tracking overlay</span><input type="checkbox" class="switch" id="overlayToggle" checked /></div>
+				<div class="row"><span>Aim dot <small class="hint">marks where the camera is aiming on the speaker; Vertical aim moves it</small></span><input type="checkbox" class="switch" id="dotToggle" checked /></div>
 				<div class="row"><span>Pulpit hold zone <small class="hint">outline the hold zone while the pulpit shot is held</small></span><input type="checkbox" class="switch" id="holdzoneToggle" checked /></div>
 			</div>
 		</section>

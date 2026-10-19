@@ -45,6 +45,9 @@ function applyPrefs() {
 	const hz = pref.get("holdzone", "1") === "1";
 	document.body.classList.toggle("no-holdzone", !hz);
 	$("#holdzoneToggle").checked = hz;
+	const dot = pref.get("aimdot", "1") === "1";
+	document.body.classList.toggle("no-dot", !dot);
+	$("#dotToggle").checked = dot;
 }
 
 // ── Toasts & tooltips ────────────────────────────────────────
@@ -237,12 +240,19 @@ function paintOverlay() {
 	ret.classList.toggle("on", !!d);
 	ret.classList.toggle("locked", !!S.locked);
 	if (d) {
+		// The brackets sit on the speaker's box; the dot sits where the camera is
+		// really aiming (cx, cy), so Vertical aim visibly moves it up and down the speaker.
+		const bx = d.bx ?? d.cx;
+		const by = d.by ?? d.cy;
 		Object.assign(ret.style, {
-			left: `${(d.cx - d.w / 2) * r.w}px`,
-			top: `${(d.cy - d.h / 2) * r.h}px`,
+			left: `${(bx - d.w / 2) * r.w}px`,
+			top: `${(by - d.h / 2) * r.h}px`,
 			width: `${d.w * r.w}px`,
 			height: `${d.h * r.h}px`,
 		});
+		const dot = $("#aimDot");
+		dot.style.left = `${d.w > 0 ? ((d.cx - bx) / d.w + 0.5) * 100 : 50}%`;
+		dot.style.top = `${d.h > 0 ? ((d.cy - by) / d.h + 0.5) * 100 : 50}%`;
 		$("#reticleTag").textContent = S.locked ? "Locked" : "Subject";
 	}
 
@@ -627,6 +637,10 @@ function bindSettings() {
 	});
 	$("#holdzoneToggle").addEventListener("change", (e) => {
 		pref.set("holdzone", e.target.checked ? "1" : "0");
+		applyPrefs();
+	});
+	$("#dotToggle").addEventListener("change", (e) => {
+		pref.set("aimdot", e.target.checked ? "1" : "0");
 		applyPrefs();
 	});
 }

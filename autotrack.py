@@ -925,8 +925,12 @@ class PersonDetector:
         cy += (offset / 7.0) * h * 0.7
         cy = max(0.0, min(1.0, cy))
 
+        # (cx, cy) is the aim point the camera centres on. (bx, by) is the middle
+        # of the speaker's box, so the interface can draw the box on the speaker
+        # and the aim dot where the camera is really aiming within it.
         fill = self._torso_fill(lms, aspect or self._aspect)
-        return cx, cy, x1 - x0, y1 - y0, (fill if fill is not None else y1 - y0)
+        return (cx, cy, x1 - x0, y1 - y0, (fill if fill is not None else y1 - y0),
+                (x0 + x1) / 2, (y0 + y1) / 2)
 
     def detect(self, frame_rgb=None, hard_lock=False, frame_bgr=None):
         """
@@ -1070,9 +1074,9 @@ class PersonDetector:
         bbox = self._landmarks_to_bbox(results.pose_landmarks.landmark, aspect=(b - a) / H)
         if bbox is None:
             return None
-        cx, cy, w, h, fill = bbox
+        cx, cy, w, h, fill, bx, by = bbox
         k = (b - a) / W
-        return a / W + cx * k, cy, w * k, h, fill
+        return a / W + cx * k, cy, w * k, h, fill, a / W + bx * k, by
 
     def release_lock(self):
         self._locked_cx = None
@@ -2197,7 +2201,9 @@ class Controller:
             "locked":        tracking and self.lock_active,
             "subject":       bool(det),
             "detection":     ({"cx": round(det[0], 4), "cy": round(det[1], 4),
-                               "w": round(det[2], 4), "h": round(det[3], 4)} if det else None),
+                               "w": round(det[2], 4), "h": round(det[3], 4),
+                               "bx": round(det[5] if len(det) > 6 else det[0], 4),
+                               "by": round(det[6] if len(det) > 6 else det[1], 4)} if det else None),
             "autozoom":      bool(SETTINGS.zoom_enabled),
             "zooming":       (self.tracker._prev_zoom if (tracking and self.tracker) else 0),
             "motion_sync":   bool(SETTINGS.motion_sync),
