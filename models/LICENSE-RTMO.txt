@@ -1,5 +1,5 @@
-rtmo-s-u8.onnx
-==============
+rtmo-s-u8-640x384.onnx
+======================
 
 RTMO-s (body7, 640x640) from OpenMMLab MMPose:
   https://github.com/open-mmlab/mmpose/tree/main/projects/rtmo
@@ -7,8 +7,10 @@ RTMO-s (body7, 640x640) from OpenMMLab MMPose:
   rtmo-s_8xb32-600e_body7-640x640-dac2bf74_20231211.zip (end2end.onnx)
 
 Modified by Trackmind: the input was changed to uint8 NHWC, with a Cast and a
-Transpose added in front of the original graph (pose_gpu.make_uint8_input).
-The network itself is unchanged.
+Transpose added in front of the original graph, and the input size reduced to
+640x384 by keeping the matching part of the three size-dependent constants
+(positional encoding and anchor priors; pose_gpu.make_uint8_input and
+pose_gpu.resize_input). The network weights are unchanged.
 
 Copyright 2018-2023 OpenMMLab. Licensed under the Apache License, Version 2.0
 (the "License"); you may not use this file except in compliance with the
