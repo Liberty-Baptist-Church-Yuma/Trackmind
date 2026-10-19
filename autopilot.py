@@ -22,6 +22,12 @@ walking one. Auto mode works in picture units instead and learns the rest:
      locked-off shot, a walking one gets matched pace.
   6. Hunting guard. If the camera reverses direction repeatedly it softens
      itself, and recovers once things are calm.
+  7. Glitch gate and reversal brake. A jump in the aim point that no walker
+     could make (an arm raise, a lean, a pose-model hiccup) is ignored until
+     it has stayed put for half a second, so it can't fake a fast speaker; and
+     a camera that is travelling fast always comes to a stop, and waits a
+     moment, before it heads the other way. Together they stop the camera
+     whipping from one direction to the other.
   7. Zoom (ZoomPilot). Frames first, zooms once the subject settles; eases
      in proportionally, stops early for the delay, learns the zoom rate.
 
@@ -233,6 +239,11 @@ W_FRESH, FRESH_SPAN    = 0.35, 0.5     # until VEL fit spans FRESH_SPAN s after 
 REVERSE_HOLD           = 2.0           # s after a move during which...
 REVERSE_DEAD           = 0.20          # ...reversing needs this much error
 STEP_HOLD              = 0.8           # VISCA steps of change needed to switch step
+JUMP_BASE              = 0.04          # a position change bigger than this + (their speed + JUMP_START) x the time since the last one isn't a walk...
+JUMP_START             = 0.25          # ...JUMP_START being how fast (frame widths / s) a still speaker can suddenly get going
+JUMP_CONFIRM           = 0.5           # ...so it is ignored until it has stayed put this long (s)
+REVERSE_FAST           = 0.12          # reversing from faster than this (frame widths / s) brakes to a stop first...
+REVERSE_PAUSE          = 0.30          # ...and waits this long (s) at a standstill before heading the other way
 
 
 class _Axis:
@@ -251,6 +262,12 @@ class _Axis:
         self.b_ego  = 0.0     # latest background velocity (for diagnostics)
         self.last_side   = 0
         self.last_side_t = -1e9
+        self.p_ok    = None   # (t, position) last position believed, camera-independent
+        self.last_t  = None   # time of the previous raw detection
+        self.cand    = None   # (t, position) a jump that hasn't been believed yet
+        self.jumping = False  # a jump is being ignored right now
+        self.heading   = 0    # direction the camera was last travelling fast
+        self.heading_t = -1e9
 
     def reset(self):
         self.__init__(self.axis)
@@ -260,6 +277,7 @@ class _Axis:
             # Can't follow the background (zooming, low confidence): restart
             # the velocity fit rather than mix two coordinate frames.
             self.hist.clear()
+            self.p_ok = self.cand = self.last_t = None
             self.ego_t = t
             return
         if self.ego_t is not None and t > self.ego_t:
@@ -296,6 +314,40 @@ class _Axis:
         if den > 0:
             lim = W_FRESH if t - self.first_t < FRESH_SPAN else W_MAX
             self.w = max(-lim, min(lim, 0.5 * self.w + 0.5 * (num / den)))
+
+    def gate(self, t, x):
+        """
+        Glitch gate: the position to use for the raw detection x. A jump no
+        walker could make in that time (an arm raise, a lean, a pose-model
+        hiccup) is ignored: the last good position is returned instead, moved
+        along with the camera's own motion, until it has stayed put for
+        JUMP_CONFIRM s, when the speaker really is there (someone else, a
+        cut) and the speed estimate starts over. It has to see the raw
+        position: the tracker's smoothing filter turns a jump into a quick
+        ramp whose steps each look like a believable walk.
+        """
+        p = x - self.ego_E
+        gap = 0.0 if self.last_t is None else min(0.5, max(0.0, t - self.last_t))
+        self.last_t = t
+        if self.p_ok is not None:
+            # Where the speaker should be by now: the last believed position,
+            # carried on at the speed they were walking.
+            p0 = self.p_ok[1] + self.w * min(0.6, max(0.0, t - self.p_ok[0]))
+            # How far could they have strayed since the previous detection?
+            # (From the previous one, not the last believed one: holding a
+            # glitch must not widen what we're willing to believe.)
+            if abs(p - p0) > JUMP_BASE + min(W_MAX, abs(self.w) + JUMP_START) * gap:
+                if self.cand is None or abs(p - self.cand[1]) > JUMP_BASE:
+                    self.cand = (t, p)
+                if t - self.cand[0] < JUMP_CONFIRM:
+                    self.jumping = True
+                    return p0 + self.ego_E
+                self.hist.clear()
+                self.w = 0.0
+                self.first_t = None
+        self.cand, self.jumping = None, False
+        self.p_ok = (t, p)
+        return x
 
 
 # ─────────────────────────────────────────────────────────────
@@ -501,6 +553,10 @@ class AutoPilot:
         for a, b in zip(self.axes, (bx, by)):
             a.on_ego(now, b, conf >= 0.25)
 
+    def gate(self, now, cx, cy):
+        """The aim point to use for this raw detection (see _Axis.gate)."""
+        return tuple(a.gate(now, x) for a, x in zip(self.axes, (cx, cy)))
+
     def blackout(self, now, seconds):
         self.model.blackout(now + seconds)
 
@@ -625,6 +681,14 @@ class AutoPilot:
         if g > 0:
             vmax = min(vmax, max_step * g)               # the profile's Fast speed is a hard limit
         b_des = max(-vmax, min(vmax, fb + ff))
+
+        # Never swing straight from one direction to the other at speed: stop
+        # first, and wait a moment. Turning round at a walking pace is still
+        # immediate. (The wait runs from when the camera was last going fast.)
+        if abs(a.b_cmd) > REVERSE_FAST:
+            a.heading, a.heading_t = (1 if a.b_cmd > 0 else -1), now
+        if a.heading and b_des * a.heading < 0 and now - a.heading_t < REVERSE_PAUSE:
+            b_des = 0.0
 
         braking = abs(b_des) < abs(a.b_cmd) or b_des * a.b_cmd < 0
         a.b_cmd = _approach(a.b_cmd, b_des, accel * (BRAKE if braking else 1.0) * dt)

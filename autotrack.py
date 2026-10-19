@@ -1161,6 +1161,7 @@ class AutoTracker:
                                        min(ZOOM_RATE_RANGE[1], max(ZOOM_RATE_RANGE[0], s.auto_zoom_rate)))
         self._zoom_speed   = 0       # VISCA speed of the zoom in progress (auto zoom)
         self._pilot_fits   = 0
+        self._aim_key      = None      # Vertical aim / focus last seen: changing them moves the aim point on purpose
         self._pending_reset = None   # "full" / "filters", set from other threads
         self._last_cmd_t   = 0.0
         self._last_cx      = None
@@ -1364,6 +1365,14 @@ class AutoTracker:
         cx, cy, bbox_w, bbox_h = detection[:4]
         fill   = detection[4] if len(detection) > 4 else bbox_h
         raw_cx, raw_cy = cx, cy
+        if s.auto_mode:
+            if (s.track_offset, s.track_focus) != self._aim_key:
+                # Vertical aim was changed: the aim point steps on purpose, so
+                # that is not a glitch to wait out.
+                self._aim_key = (s.track_offset, s.track_focus)
+                for a in self.pilot.axes:
+                    a.p_ok = a.cand = None
+            cx, cy = self.pilot.gate(now, cx, cy)       # ignore a glitch before it can look like a walk
         fdt = (now - self._last_det_t) if self._last_det_t else 0.04
         self._last_det_t = now
         cx     = self._f_cx(cx, fdt)
