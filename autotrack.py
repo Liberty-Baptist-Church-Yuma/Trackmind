@@ -88,6 +88,13 @@ class Settings:
         self.zoom_dead    = 0.20
         self.zoom_speed   = 1
 
+        # Wide tracking: while on, the camera ignores the speaker until they
+        # cross one of a pair of dashed lines well out from centre — wider
+        # than the normal pan dead zone — then tracks them in as usual until
+        # they settle. Manual mode only; wide_dead stands in for pan_dead.
+        self.wide_enabled = False
+        self.wide_dead    = 0.40
+
         self.motion_sync  = False   # PTZOptics: sync pan/tilt/zoom to arrive together
         self.motion_smooth = 5      # 0=off (snap), 1..10 = gentler accel/decel ramps
 
@@ -183,6 +190,8 @@ class Settings:
             "zoom_target":  self.zoom_target,
             "zoom_dead":    self.zoom_dead,
             "zoom_speed":   self.zoom_speed,
+            "wide_enabled": self.wide_enabled,
+            "wide_dead":    self.wide_dead,
             "motion_sync":  self.motion_sync,
             "motion_smooth": self.motion_smooth,
             "latency_comp": self.latency_comp,
@@ -244,6 +253,7 @@ class Settings:
             "tilt_dead": self.tilt_dead, "tilt_slow": self.tilt_slow, "tilt_fast": self.tilt_fast,
             "zoom_enabled": self.zoom_enabled, "zoom_target": self.zoom_target,
             "zoom_dead": self.zoom_dead, "zoom_speed": self.zoom_speed,
+            "wide_enabled": self.wide_enabled, "wide_dead": self.wide_dead,
             "motion_sync": self.motion_sync, "motion_smooth": self.motion_smooth,
             "latency_comp": self.latency_comp, "lost_timeout": self.lost_timeout,
             "track_offset": self.track_offset,
@@ -1463,7 +1473,11 @@ class AutoTracker:
 
         # Continuous proportional targets (float). Negative sign keeps the
         # existing image->camera direction convention.
-        pan_speed,  self._pan_active  = smooth_speed(pred_cx, s.pan_dead,  s.pan_slow,
+        # Wide tracking swaps in a much wider pan dead zone: the camera holds
+        # still until the speaker crosses the (wider) dashed lines, then
+        # tracks in and settles exactly as it normally does.
+        pan_dead = s.wide_dead if s.wide_enabled else s.pan_dead
+        pan_speed,  self._pan_active  = smooth_speed(pred_cx, pan_dead,  s.pan_slow,
                                                      s.pan_fast,  self._pan_active)
         tilt_speed, self._tilt_active = smooth_speed(pred_cy, s.tilt_dead, s.tilt_slow,
                                                      s.tilt_fast, self._tilt_active)
@@ -1866,6 +1880,8 @@ SETTINGS_SCHEMA = {
     "zoom_target":   _clamp_float(0.20, 0.90),
     "zoom_dead":     _clamp_float(0.05, 0.40),
     "zoom_speed":    _clamp_int(0, 7),
+    "wide_enabled":  _as_bool,
+    "wide_dead":     _clamp_float(0.20, 0.49),
     "latency_comp":  _clamp_float(0.0, 2.0),
     "lost_timeout":  _clamp_float(1.0, 10.0, 1),
     "auto_mode":     _as_bool,
@@ -1888,8 +1904,8 @@ SETTINGS_SCHEMA = {
 
 # Commands the external Control API (Stream Deck, Companion…) may call.
 # Everything else needs the UI token.
-PUBLIC_COMMANDS = {"tracking", "lock", "autozoom", "auto", "motion-sync", "preset",
-                   "home", "profile", "move", "zoom", "adjust", "anchor"}
+PUBLIC_COMMANDS = {"tracking", "lock", "autozoom", "auto", "motion-sync", "wide-tracking",
+                   "preset", "home", "profile", "move", "zoom", "adjust", "anchor"}
 
 
 _DIAG_PRIVATE = {"rtsp_user", "rtsp_pass", "camera_ip"}
@@ -1912,6 +1928,8 @@ class Controller:
                           lambda v: setattr(SETTINGS, "zoom_target", v / 100.0)),
         "zoom_speed":    (0, 7,   lambda: SETTINGS.zoom_speed,
                           lambda v: setattr(SETTINGS, "zoom_speed", v)),
+        "wide_dead":     (20, 49, lambda: int(round(SETTINGS.wide_dead * 100)),
+                          lambda v: setattr(SETTINGS, "wide_dead", v / 100.0)),
     }
 
     def __init__(self):
@@ -2046,6 +2064,14 @@ class Controller:
             if self.visca:
                 try: self.visca.set_motion_sync(SETTINGS.motion_sync)
                 except Exception as e: print(f"[VISCA] Motion Sync toggle failed: {e}")
+
+    def set_wide_tracking(self, on):
+        with self._lock:
+            if SETTINGS.wide_enabled != bool(on):
+                SETTINGS.wide_enabled = bool(on)
+                if self.tracker:
+                    self.tracker.request_reset(full=False)
+                DIAG.event("wide-tracking", on=SETTINGS.wide_enabled)
 
     # ── Settings & profiles ───────────────────────────────────
 
@@ -2263,6 +2289,7 @@ class Controller:
             "autozoom":      bool(SETTINGS.zoom_enabled),
             "zooming":       (self.tracker._prev_zoom if (tracking and self.tracker) else 0),
             "motion_sync":   bool(SETTINGS.motion_sync),
+            "wide_tracking": {"enabled": bool(SETTINGS.wide_enabled), "dead": round(SETTINGS.wide_dead, 3)},
             "visca":         bool(self.visca and self.visca._connected),
             "manual":        bool(self._manual["move"] or self._manual["zoom"]),
             "camera_ip":     SETTINGS.camera_ip,
@@ -2351,6 +2378,11 @@ class Controller:
 
         if name == "motion-sync":
             self.set_motion_sync(self._want(body, SETTINGS.motion_sync))
+            self.schedule_save()
+            return ok()
+
+        if name == "wide-tracking":
+            self.set_wide_tracking(self._want(body, SETTINGS.wide_enabled))
             self.schedule_save()
             return ok()
 

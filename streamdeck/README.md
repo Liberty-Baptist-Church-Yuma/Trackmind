@@ -26,9 +26,10 @@ Every key is a full-bleed pane of real liquid glass. The plugin renders each key
 | **Zoom (Hold)** | Zooms in / out while held, at speed 0–7 | Direction and speed |
 | **Load Profile** | Load a saved Trackmind profile | Profile name. Lights up while that profile is active |
 | **Motion Sync** | Toggle PTZOptics Motion Sync | On / off |
+| **Wide Tracking** | Toggle / on / off wide tracking for the active profile | On / off |
 | **Pulpit Anchor** | Toggle / on / off the pulpit anchor for the active profile | Off / not learned / armed / in range / holding. Lights amber while on, with a green corner light while the pulpit shot is held |
 | **Status** | Re-check the connection | Live tally: tracking / paused / connecting / no stream |
-| **Tracking Dial** *(Stream Deck +)* | Twist: fine-tune vertical offset, smoothing, zoom target or zoom speed live. Push: tracking on/off. Tap the strip: lock | Live value bar and status |
+| **Tracking Dial** *(Stream Deck +)* | Twist: fine-tune vertical offset, smoothing, zoom target, zoom speed or wide-tracking spacing live. Push: tracking on/off. Tap the strip: lock | Live value bar and status |
 
 Multi-actions are supported. A good pattern for services is a **"Sermon"** multi-action:
 
@@ -38,7 +39,7 @@ Multi-actions are supported. A good pattern for services is a **"Sermon"** multi
 
 ## Requirements
 
-- **Trackmind v1.7 or newer**, running on the same PC as the Stream Deck software (the Pulpit Anchor key needs v1.8 or newer, the Auto Mode key v1.8.2 or newer)
+- **Trackmind v1.7 or newer**, running on the same PC as the Stream Deck software (the Pulpit Anchor key needs v1.8 or newer, the Auto Mode key v1.8.2 or newer, the Wide Tracking key and dial param v1.8.7 or newer)
 - **Stream Deck software 7.1 or newer** (Windows 10+ or macOS 12+)
 - Any Stream Deck model. The Tracking Dial needs a Stream Deck +.
 

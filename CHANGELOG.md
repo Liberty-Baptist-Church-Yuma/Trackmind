@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.7 — 2026-11-14
+
+### Tracking
+- **Wide tracking.** A new way to run the pan dead zone: instead of a modest band around centre, the camera ignores the speaker across most of the picture and only moves once they cross one of a pair of dashed lines well out toward the edges — then it tracks in and settles exactly as it normally does. Good for a speaker who paces a stage without a fixed spot (so the pulpit anchor doesn't fit) but who you'd rather the camera leave alone unless they really walk. **Settings → Tracking → Wide tracking** turns it on (off by default, saved per profile) and **Line spacing** sets how far out the lines sit (default 0.40, vs. the normal pan dead zone's default 0.17); while on, it replaces the Pan dead zone setting — Tilt is unaffected. Manual mode only (Auto mode keeps its own adaptive dead zone). The lines are drawn as dashed, translucent verticals on the video, in place of the usual dead-zone box. New **Wide Tracking** Stream Deck key (toggle / on / off), and **Wide tracking spacing** is a Tracking Dial parameter. `GET /api/status` reports `wide_tracking`, and `wide_dead` is a new `/api/adjust` key — see [`docs/API.md`](docs/API.md).
+
 ## v1.8.6 — 2026-10-18
 
 This release replaces v1.8.5, which is withdrawn. It is built on v1.8.4, with the parts of v1.8.5 that worked brought back (the lighter GPU model, the pulpit-check fix and Auto zoom) and none of its rewrite of how Auto follows a walking speaker. There are no new Stream Deck keys: the two new behaviours are settings.

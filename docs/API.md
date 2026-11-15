@@ -44,6 +44,7 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
   "autozoom": false,
   "zooming": 0,
   "motion_sync": true,
+  "wide_tracking": { "enabled": false, "dead": 0.40 },
   "visca": true,
   "manual": false,
   "camera_ip": "192.168.100.88",
@@ -60,7 +61,8 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
     "track_offset": 2,
     "motion_smooth": 5,
     "zoom_target": 45,
-    "zoom_speed": 1
+    "zoom_speed": 1,
+    "wide_dead": 40
   }
 }
 ```
@@ -79,6 +81,7 @@ Returns a snapshot of everything Trackmind is doing. Poll it (the Stream Deck pl
 | `autozoom` | bool | Auto-zoom is enabled. |
 | `zooming` | `-1` \| `0` \| `1` | Auto-zoom is currently zooming out, idle, or zooming in. |
 | `motion_sync` | bool | PTZOptics Motion Sync is enabled. |
+| `wide_tracking` | object | `enabled` — wide tracking is on (manual mode only). `dead` — how far the dashed lines sit from centre, as a fraction of the frame half-width (0.20–0.49). While on, it replaces `pan_dead` for the pan axis; tilt is unaffected. |
 | `visca` | bool | The VISCA control socket to the camera is connected. |
 | `manual` | bool | A manual `move` or `zoom` is in progress (a Stream Deck key is being held). |
 | `camera_ip` | string | Camera IP from Trackmind's settings. |
@@ -118,7 +121,7 @@ Every command is a `POST` with a JSON object body (use `{}` when there are no pa
 | `502` | Camera didn't accept the VISCA command |
 | `503` | Trackmind's UI thread was busy for >3 s (rare; retry) |
 
-### Toggles: `tracking`, `lock`, `auto`, `autozoom`, `motion-sync`, `anchor`
+### Toggles: `tracking`, `lock`, `auto`, `autozoom`, `motion-sync`, `wide-tracking`, `anchor`
 
 ```http
 POST /api/tracking      {"state": "toggle"}
@@ -126,6 +129,7 @@ POST /api/lock          {"state": "on"}
 POST /api/auto          {"state": "on", "style": "calm"}
 POST /api/autozoom      {"state": "off"}
 POST /api/motion-sync   {"state": "toggle"}
+POST /api/wide-tracking {"state": "toggle"}
 POST /api/anchor        {"state": "toggle"}
 ```
 
@@ -139,7 +143,7 @@ These commands work exactly like the buttons in Trackmind's main window:
 - **tracking** returns `409` until the video stream is live.
 - **lock** `"on"` returns `409` while tracking is off. **lock** `"off"` always succeeds.
 - **auto** turns Auto mode on or off for the active settings. The optional `style` (`"calm"`, `"balanced"`, `"responsive"`) changes how lively it is. Both are saved.
-- **autozoom** and **motion-sync** are saved to Trackmind's settings. Motion Sync is pushed to the camera immediately.
+- **autozoom**, **motion-sync** and **wide-tracking** are saved to Trackmind's settings. Motion Sync is pushed to the camera immediately. Wide tracking only affects manual mode.
 - **anchor** turns the pulpit anchor on or off and saves that into the active profile. `"on"` returns `409` if the pulpit hasn't been learned for this profile yet (that's done in the app's Settings → Pulpit).
 
 ### `POST /api/preset`
@@ -220,6 +224,7 @@ Change a tracking value live. The change shows in Trackmind's settings panel and
 | `motion_smooth` | `0`–`10` | Accel/decel smoothing: 0 = snappy, 10 = silkiest |
 | `zoom_target` | `20`–`90` | Auto-zoom target frame fill, in % |
 | `zoom_speed` | `0`–`7` | Auto-zoom motor speed |
+| `wide_dead` | `20`–`49` | Wide tracking line spacing, as % of the frame half-width |
 
 Send either `delta` (relative) or `value` (absolute). Results are clamped to the range. The success response includes `"key"` and the new `"value"`.
 
@@ -251,4 +256,4 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8742/api/lock `
 
 ## Versioning
 
-The API was added in Trackmind **v1.7**. New fields and commands may be added in later versions, but existing ones won't change meaning. Clients should ignore fields they don't recognise. The `anchor` command and status block were added in **v1.8**.
+The API was added in Trackmind **v1.7**. New fields and commands may be added in later versions, but existing ones won't change meaning. Clients should ignore fields they don't recognise. The `anchor` command and status block were added in **v1.8**. The `wide-tracking` command, the `wide_tracking` status block and the `wide_dead` value were added in **v1.8.7**.

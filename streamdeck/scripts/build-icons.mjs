@@ -61,6 +61,7 @@ const actions = {
 	autozoom: { icon: "autozoom", key: { tone: "blue", active: false, icon: "autozoom", label: "Auto-Zoom", sub: "Off" } },
 	anchor: { icon: "pulpit", key: { tone: "amber", active: false, icon: "pulpit", label: "Pulpit", sub: "Off" } },
 	motionsync: { icon: "motionSync", key: { tone: "blue", active: false, icon: "motionSync", label: "Motion Sync", sub: "Off" } },
+	widetracking: { icon: "wideTracking", key: { tone: "green", active: false, icon: "wideTracking", label: "Wide Track", sub: "Off" } },
 	preset: { icon: "camera", key: { tone: "red", active: false, glyph: "1", label: "Preset", sub: "Recall" } },
 	home: { icon: "home", key: { tone: "red", active: false, icon: "home", label: "Home", sub: "Preset" } },
 	profile: { icon: "profile", key: { tone: "blue", active: false, icon: "profile", label: "Profile", sub: "Load" } },

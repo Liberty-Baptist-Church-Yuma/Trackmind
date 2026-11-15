@@ -118,6 +118,36 @@ def test_zoom_hysteresis_reaches_target_instead_of_band_edge(settings, clock, vi
     assert visca.zooms[-1] == 0
 
 
+# ── Wide tracking ────────────────────────────────────────────
+
+def test_wide_tracking_off_uses_normal_pan_dead_zone(settings, clock, visca):
+    settings.wide_enabled = False
+    t = AutoTracker(visca)
+    run(t, clock, 5, 0.5 + settings.pan_dead - 0.01)   # just inside the normal dead zone
+    assert visca.pan == 0
+    run(t, clock, 5, 0.5 + settings.pan_dead + 0.05)   # just outside it
+    assert visca.pan != 0
+
+
+def test_wide_tracking_holds_still_inside_the_wider_lines(settings, clock, visca):
+    settings.wide_enabled, settings.wide_dead = True, 0.40
+    t = AutoTracker(visca)
+    # Well outside the normal pan dead zone, but still inside the wide lines
+    run(t, clock, 5, 0.5 + settings.pan_dead + 0.05)
+    assert visca.pan == 0
+    run(t, clock, 5, 0.5 + settings.wide_dead + 0.05)  # past the wide line
+    assert visca.pan != 0
+
+
+def test_wide_tracking_leaves_tilt_alone(settings, clock, visca):
+    settings.wide_enabled, settings.wide_dead = True, 0.40
+    t = AutoTracker(visca)
+    for _ in range(5):
+        clock.advance(0.04)
+        t.process((0.5, 0.5 + settings.tilt_dead + 0.05, 0.2, 0.4))
+    assert visca.tilt != 0
+
+
 # ── Closed loop with video latency ─────────────────────────────
 
 def simulate(settings, clock, script, seconds=8.0, latency=0.3, cmd_latency=0.1,

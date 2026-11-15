@@ -2,7 +2,15 @@ import streamDeck from "@elgato/streamdeck";
 
 import { HomeAction, MoveAction, PresetAction, ProfileAction, StatusAction, ZoomAction } from "./actions/camera";
 import { TrackingDialAction } from "./actions/dial";
-import { AnchorAction, AutoAction, AutoZoomAction, LockAction, MotionSyncAction, TrackingAction } from "./actions/toggles";
+import {
+	AnchorAction,
+	AutoAction,
+	AutoZoomAction,
+	LockAction,
+	MotionSyncAction,
+	TrackingAction,
+	WideTrackingAction,
+} from "./actions/toggles";
 import { initRaster } from "./render/raster";
 import { trackmind, type Connection } from "./trackmind";
 
@@ -13,6 +21,7 @@ streamDeck.actions.registerAction(new LockAction());
 streamDeck.actions.registerAction(new AutoAction());
 streamDeck.actions.registerAction(new AutoZoomAction());
 streamDeck.actions.registerAction(new MotionSyncAction());
+streamDeck.actions.registerAction(new WideTrackingAction());
 streamDeck.actions.registerAction(new AnchorAction());
 streamDeck.actions.registerAction(new PresetAction());
 streamDeck.actions.registerAction(new HomeAction());

@@ -16,6 +16,7 @@ const PARAMS: Record<Param, { name: string; min: number; max: number; centred?: 
 	motion_smooth: { name: "Motion smoothing", min: 0, max: 10, fmt: (v) => `${v}` },
 	zoom_target: { name: "Zoom target", min: 20, max: 90, fmt: (v) => `${v}%` },
 	zoom_speed: { name: "Zoom speed", min: 0, max: 7, fmt: (v) => `${v}` },
+	wide_dead: { name: "Wide tracking spacing", min: 20, max: 49, fmt: (v) => `${v}%` },
 };
 
 type DialSettings = { param?: Param; step?: number };

@@ -141,3 +141,13 @@ export class MotionSyncAction extends ToggleAction {
 		return { key: { tone: "blue", active: on, icon: "motionSync", label: "Motion Sync", sub: on ? "On" : "Off" } };
 	}
 }
+
+@action({ UUID: "com.coder747.trackmind.widetracking" })
+export class WideTrackingAction extends ToggleAction {
+	protected readonly command = "wide-tracking";
+
+	protected view(_: ToggleSettings, s: TrackmindStatus | null): View {
+		const on = !!s?.wide_tracking?.enabled;
+		return { key: { tone: "green", active: on, icon: "wideTracking", label: "Wide Track", sub: on ? "On" : "Off" } };
+	}
+}

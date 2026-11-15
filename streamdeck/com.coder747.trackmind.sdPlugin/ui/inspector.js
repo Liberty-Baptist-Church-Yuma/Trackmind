@@ -15,6 +15,7 @@
 		auto: { name: "Auto Mode", accent: "green" },
 		autozoom: { name: "Auto-Zoom", accent: "blue" },
 		motionsync: { name: "Motion Sync", accent: "blue" },
+		widetracking: { name: "Wide Tracking", accent: "green" },
 		anchor: { name: "Pulpit Anchor", accent: "amber" },
 		preset: { name: "Recall Preset", accent: "red" },
 		home: { name: "Home Preset", accent: "red" },

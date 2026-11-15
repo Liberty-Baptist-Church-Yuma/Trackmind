@@ -115,6 +115,22 @@ body.no-overlay .overlay { display: none; }
 	transition: opacity 0.4s var(--ease);
 }
 body[data-tracking="true"] .deadzone { opacity: 1; }
+.overlay.wide .deadzone { opacity: 0; }
+
+/* Wide tracking: a pair of dashed lines well out from centre. The camera
+   holds still until the speaker crosses one, same idea as the dead zone
+   but drawn as lines rather than a box since only pan is affected. */
+.wideline {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 0;
+	border-left: 1.5px dashed rgba(255, 255, 255, 0.22);
+	opacity: 0;
+	transition: opacity 0.4s var(--ease), left 0.3s var(--ease);
+}
+body[data-tracking="true"] .overlay.wide .wideline { opacity: 1; }
+.overlay.holding .wideline { opacity: 0; }
 
 .reticle {
 	--c: var(--green-rgb);

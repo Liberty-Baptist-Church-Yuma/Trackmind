@@ -37,6 +37,12 @@ export const icons = {
 		stroke("M12 4.5L14.5 7 12 9.5M12 9.5l2.5 2.5-2.5 2.5M12 14.5l2.5 2.5-2.5 2.5", ink) +
 		stroke("M19.5 3.5v17", accent, 2.5),
 
+	/** A pair of dashed lines flanking the subject — the wide-tracking dead zone. */
+	wideTracking: (ink, accent) =>
+		`<path d="M5 2.5v3M5 8.5v3M5 14.5v3M5 20.5v1.5" stroke="${ink}" stroke-width="2" stroke-linecap="round"/>` +
+		`<path d="M19 2.5v3M19 8.5v3M19 14.5v3M19 20.5v1.5" stroke="${ink}" stroke-width="2" stroke-linecap="round"/>` +
+		`<circle cx="12" cy="12" r="3.2" fill="${accent}"/>`,
+
 	/** Lectern with the speaker's head above it — same as the app's i-pulpit. */
 	pulpit: (ink, accent) =>
 		stroke("M4.5 9.5L19.5 7v3.2L4.5 12.7z", ink) + stroke("M12 12v8M8 20.5h8", ink) + `<circle cx="12" cy="4" r="1.8" fill="${accent}"/>`,

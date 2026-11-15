@@ -225,6 +225,9 @@ function paintOverlay() {
 	Object.assign(ov.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` });
 	if (!S) return;
 
+	const wide = !!S.settings?.wide_enabled;
+	ov.classList.toggle("wide", wide);
+
 	const dz = $("#deadzone");
 	const pd = S.settings?.pan_dead ?? 0.17;
 	const td = S.settings?.tilt_dead ?? 0.17;
@@ -234,6 +237,10 @@ function paintOverlay() {
 		width: `${2 * pd * r.w}px`,
 		height: `${2 * td * r.h}px`,
 	});
+
+	const wd = S.settings?.wide_dead ?? 0.40;
+	$("#wideLineLeft").style.left  = `${(0.5 - wd) * r.w}px`;
+	$("#wideLineRight").style.left = `${(0.5 + wd) * r.w}px`;
 
 	const ret = $("#reticle");
 	const d = S.detection;

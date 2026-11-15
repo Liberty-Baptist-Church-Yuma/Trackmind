@@ -94,7 +94,7 @@ The live camera fills the window. Every control floats over the picture as liqui
 | **Top center** | Tally pill: **TRACKING** (green), **LOCKED** (amber), **PAUSED**, **CONNECTING** (amber), **NO SIGNAL** (red). Next to it is what the tracker is doing right now. |
 | **Top right** | Camera chip (IP and live FPS; click it for camera settings), **Live tune**, **Full screen**, **Settings** |
 | **Bottom dock** | The buttons you use during a service: **Tracking**, **Lock**, **Auto**, **Auto-Zoom**, **Home** |
-| **On the video** | Green corner brackets follow the subject (amber when locked) and the **aim dot** inside them shows the exact point the camera is trying to centre: along the torso line across, and up and down the body as set by **Vertical aim**, so moving that setting slides the dot up or down the speaker. The dashed box is the dead zone, where the camera stays still. While the [pulpit anchor](#pulpit-anchor) holds the shot, a **Holding on pulpit** chip shows at the top and an amber band marks the hold zone. |
+| **On the video** | Green corner brackets follow the subject (amber when locked) and the **aim dot** inside them shows the exact point the camera is trying to centre: along the torso line across, and up and down the body as set by **Vertical aim**, so moving that setting slides the dot up or down the speaker. The dashed box is the dead zone, where the camera stays still. With [wide tracking](#tracking) on, that box is replaced by a pair of dashed lines further out. While the [pulpit anchor](#pulpit-anchor) holds the shot, a **Holding on pulpit** chip shows at the top and an amber band marks the hold zone. |
 
 - **Tracking (T):** when on, the camera follows whoever is detected in frame. When off, the camera stops, and you have full manual control from a joystick, Stream Deck, vMix, or any other controller.
 - **Lock (L):** while tracking, locks onto the current subject and ignores everyone else. Turning tracking off releases the lock.
@@ -189,6 +189,8 @@ It needs a camera that answers the VISCA pan/tilt position inquiry. PTZOptics ca
 | Pan / Tilt · fast in Auto mode | | Auto mode uses these as its top speed. |
 | Pan / Tilt · slow, fast | 2 / 5 | Speed range (1–24). Speed glides smoothly between slow (just off center) and fast (at the frame edge). |
 | Dead zones · pan, tilt | 0.17 | Fraction of the frame the subject can drift before the camera follows. Higher is steadier. |
+| Wide tracking | Off | While on, the camera holds still until the speaker crosses a pair of dashed lines well out from centre, then tracks in and settles exactly as it normally does. Replaces the Pan dead zone above; Tilt is unaffected. Manual mode only. Saved per profile. |
+| Line spacing | 0.40 | How far the wide-tracking lines sit from centre, as a fraction of the frame half-width. Open them wider to let the speaker roam further before the camera follows. |
 
 ### Auto-zoom
 
@@ -235,7 +237,7 @@ Trackmind has an official Stream Deck plugin with liquid-glass, vMix-style tally
   <img src="docs/images/streamdeck-keys.png" width="760" alt="Trackmind Stream Deck keys">
 </p>
 
-**Actions:** Tracking · Lock Subject · Recall Preset · Home Preset · Auto-Zoom · Pan/Tilt (hold) · Zoom (hold) · Load Profile · Motion Sync · Pulpit Anchor · Status · Tracking Dial (Stream Deck +)
+**Actions:** Tracking · Lock Subject · Recall Preset · Home Preset · Auto-Zoom · Pan/Tilt (hold) · Zoom (hold) · Load Profile · Motion Sync · Wide Tracking · Pulpit Anchor · Status · Tracking Dial (Stream Deck +)
 
 **Install:**
 
@@ -255,13 +257,13 @@ Trackmind exposes a small JSON HTTP API on `http://127.0.0.1:8742/api/`. Anythin
 | Endpoint | Does |
 |----------|------|
 | `GET /api/status` | Full live state: tracking, lock, subject position, stream, profiles, live values |
-| `POST /api/tracking` · `lock` · `autozoom` · `motion-sync` · `anchor` | `{"state": "toggle" \| "on" \| "off"}` |
+| `POST /api/tracking` · `lock` · `autozoom` · `motion-sync` · `wide-tracking` · `anchor` | `{"state": "toggle" \| "on" \| "off"}` |
 | `POST /api/preset` | `{"preset": 4, "tracking": "off" \| "keep"}` |
 | `POST /api/home` | Recall the home preset |
 | `POST /api/profile` | `{"name": "Sunday AM"}` |
 | `POST /api/move` | Manual pan/tilt `{"pan": 6, "tilt": 0}`. Stops by itself after 1.2 s without a repeat. |
 | `POST /api/zoom` | Manual zoom `{"dir": "in", "speed": 3}`, with the same keep-alive rule |
-| `POST /api/adjust` | Live-tune `track_offset`, `motion_smooth`, `zoom_target`, `zoom_speed` |
+| `POST /api/adjust` | Live-tune `track_offset`, `motion_smooth`, `zoom_target`, `zoom_speed`, `wide_dead` |
 
 ```bash
 curl -X POST http://127.0.0.1:8742/api/tracking -H "Content-Type: application/json" -d '{"state":"toggle"}'

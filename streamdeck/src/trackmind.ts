@@ -9,6 +9,15 @@ export type Values = {
 	motion_smooth: number;
 	zoom_target: number;
 	zoom_speed: number;
+	/** Missing on Trackmind older than v1.8.7. */
+	wide_dead?: number;
+};
+
+/** Wide tracking — see Controller.status in autotrack.py. */
+export type WideTracking = {
+	enabled: boolean;
+	/** Fraction of the frame half-width, 0.20–0.49. */
+	dead: number;
 };
 
 /** Pulpit anchor — see Controller.anchor_view in autotrack.py. */
@@ -49,6 +58,8 @@ export type TrackmindStatus = {
 	autozoom: boolean;
 	zooming: -1 | 0 | 1;
 	motion_sync: boolean;
+	/** Missing on Trackmind older than v1.8.7. */
+	wide_tracking?: WideTracking;
 	visca: boolean;
 	manual: boolean;
 	camera_ip: string;
